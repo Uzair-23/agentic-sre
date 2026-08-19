@@ -23,7 +23,7 @@ Living document. Update the status and checkboxes as you go — don't mark a pha
 
 ## Phase 0 — Project setup
 
-**Status:** 🔲
+**Status:** ✅
 **Goal:** repo, environment, and the shared-state schema exist before any agent logic is written.
 
 **Description:** This phase has no agent behavior in it — it's the foundation everything else depends on. The shared `IncidentState` Pydantic model designed here is read and written by every agent in every later phase, so getting its fields right now avoids painful refactors later.
