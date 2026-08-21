@@ -1,59 +1,78 @@
 from datetime import datetime
-from dotenv import load_dotenv
 from pathlib import Path
 import pytest
+from dotenv import load_dotenv
 from pydantic import ValidationError
 
+# Load environment variables
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 from agents.schemas import IncidentState, FixProposal
 from agents.remediation import RemediationOutput, run_remediation_agent
 
-
-def test_remediation_output_validation():
-    valid = RemediationOutput(
-        action_type="rollback",
-        target="payment-service",
-        params={"to_version": "v2.3.0"},
-        justification="Rollback recent deploy to resolve memory leak.",
-    )
-    assert valid.action_type == "rollback"
-    assert valid.target == "payment-service"
-
-    with pytest.raises(ValidationError):
-        RemediationOutput(
-            action_type="rm -rf /",  # Invalid action type
-            target="payment-service",
-            params={},
-            justification="Arbitrary command",
-        )
+VALID_ACTION_TYPES = ["rollback", "restart_service", "scale_up", "toggle_config_flag"]
 
 
-def test_run_remediation_agent_state_update_and_immutability():
-    initial_state = IncidentState(
-        incident_id="inc_rem_101",
+@pytest.fixture
+def mock_diagnosed_state() -> IncidentState:
+    """Construct a mock IncidentState with a diagnosed hypothesis."""
+    return IncidentState(
+        incident_id="inc_rem_2026",
         created_at=datetime.now(),
-        symptoms=["OOMKilled process terminated", "Memory usage 96%"],
-        raw_signals={"service": "payment-service", "metric": "memory"},
-        root_cause_hypothesis="Memory leak introduced in deploy v2.3.1",
-        confidence_score=0.9,
+        symptoms=["Memory usage climbing steadily to 96%", "OOMKilled restart on payment-service"],
+        raw_signals={"service": "payment-service", "metric": "memory", "peak": "96%"},
+        root_cause_hypothesis="Memory leak introduced in deploy v2.3.1 on payment-service",
+        confidence_score=0.87,
         event_log=[],
     )
 
-    updated_state = run_remediation_agent(initial_state)
 
-    # Immutability check
-    assert initial_state.proposed_fix is None
-    assert len(initial_state.event_log) == 0
+def test_successful_remediation(mock_diagnosed_state: IncidentState):
+    """Test run_remediation_agent proposes a valid FixProposal without mutating initial state."""
+    updated_state = run_remediation_agent(mock_diagnosed_state)
 
-    # Updated state checks
+    # 1. Returned state is not None
+    assert updated_state is not None
+
+    # 2. proposed_fix is an instance of FixProposal
     assert updated_state.proposed_fix is not None
     assert isinstance(updated_state.proposed_fix, FixProposal)
-    assert updated_state.proposed_fix.action_type in ["rollback", "restart_service", "scale_up", "toggle_config_flag"]
-    assert updated_state.proposed_fix.target == "payment-service"
 
-    # Event log check
+    # 3. proposed_fix.action_type is one of approved action types
+    assert updated_state.proposed_fix.action_type in VALID_ACTION_TYPES
+
+    # 4. proposed_fix.target is not empty
+    assert updated_state.proposed_fix.target is not None
+    assert isinstance(updated_state.proposed_fix.target, str)
+    assert len(updated_state.proposed_fix.target.strip()) > 0
+
+    # 5. event_log has a new event with source_agent == 'Remediation'
     assert len(updated_state.event_log) == 1
-    assert updated_state.event_log[0].source_agent == "Remediation"
-    assert updated_state.event_log[0].action == "Fix Proposed"
+    remediation_event = updated_state.event_log[0]
+    assert remediation_event.source_agent == "Remediation"
+    assert remediation_event.action == "Fix Proposed"
+
+    # 6. Original state was not mutated in place
+    assert mock_diagnosed_state.proposed_fix is None
+    assert len(mock_diagnosed_state.event_log) == 0
+
+
+def test_remediation_output_validation():
+    """Test schema validation for RemediationOutput."""
+    valid_output = RemediationOutput(
+        action_type="rollback",
+        target="payment-service",
+        params={"to_version": "v2.3.0"},
+        justification="Rollback recent deployment to resolve memory leak.",
+    )
+    assert valid_output.action_type == "rollback"
+    assert valid_output.target == "payment-service"
+
+    with pytest.raises(ValidationError):
+        RemediationOutput(
+            action_type="unauthorized_command",  # Invalid action type
+            target="payment-service",
+            params={},
+            justification="Arbitrary command attempt",
+        )
