@@ -29,18 +29,18 @@ Living document. Update the status and checkboxes as you go — don't mark a pha
 **Description:** This phase has no agent behavior in it — it's the foundation everything else depends on. The shared `IncidentState` Pydantic model designed here is read and written by every agent in every later phase, so getting its fields right now avoids painful refactors later.
 
 ### Tasks
-- [ ] Create repo `agentic-sre` with the folder structure (`backend/`, `frontend/`, `docs/`, `.github/workflows/`)
-- [ ] Set up Python env (`poetry`/`venv`), install core deps (`langgraph`, `langchain-groq`, `fastapi`, `uvicorn`, `pydantic`, `langfuse`, `presidio-analyzer`)
-- [ ] Get Groq API key (free tier), store in `.env`, add `.env.example`
-- [ ] Set up `docker-compose.yml` for self-hosted Langfuse + Postgres, confirm it runs
-- [ ] Set up Node/Vite for the frontend shell
-- [ ] Define `IncidentState` Pydantic model in `agents/schemas.py`
-- [ ] Copy `docs/PRD.md`, `docs/implementation_plan.md`, `CLAUDE.md` into the repo
+- [✅ ✅] Create repo `agentic-sre` with the folder structure (`backend/`, `frontend/`, `docs/`, `.github/workflows/`)
+- [✅ ] Set up Python env (`poetry`/`venv`), install core deps (`langgraph`, `langchain-groq`, `fastapi`, `uvicorn`, `pydantic`, `langfuse`, `presidio-analyzer`)
+- [✅ ] Get Groq API key (free tier), store in `.env`, add `.env.example`
+- [✅ ] Set up `docker-compose.yml` for self-hosted Langfuse + Postgres, confirm it runs
+- [✅ ] Set up Node/Vite for the frontend shell
+- [✅ ] Define `IncidentState` Pydantic model in `agents/schemas.py`
+- [✅ ] Copy `docs/PRD.md`, `docs/implementation_plan.md`, `CLAUDE.md` into the repo
 
 ### Exit criteria
-- [ ] `docker compose up` brings up Langfuse locally without errors
-- [ ] `IncidentState` model is defined and imports cleanly
-- [ ] A "hello world" LangGraph graph with one dummy node runs end to end against Groq
+- [ ✅] `docker compose up` brings up Langfuse locally without errors
+- [ ✅] `IncidentState` model is defined and imports cleanly
+- [ ✅] A "hello world" LangGraph graph with one dummy node runs end to end against Groq
 
 ### Notes / blockers
 _(add anything you hit here as you go)_
@@ -49,22 +49,22 @@ _(add anything you hit here as you go)_
 
 ## Phase 1 — Core pipeline
 
-**Status:** 🔲
+**Status:** ✅
 **Goal:** Monitor → Diagnosis → Remediation working end-to-end on hardcoded synthetic incidents. No UI, no guardrails yet — just prove the hand-off works.
 
 **Description:** This is where the actual multi-agent behavior comes alive. Each agent is built and tested individually against 2-3 hand-written synthetic incidents before wiring them together in LangGraph. The Monitor agent pairs a deterministic statistical check with LLM interpretation — don't let the LLM freely decide what counts as an anomaly. All agent outputs must be structured (Pydantic), never free-text parsed.
 
 ### Tasks
-- [ ] Build `simulator/incident_generator.py` — 3 incident types (memory leak, bad deploy, dependency timeout)
-- [ ] Build Monitor agent (`agents/monitor.py`) — read-only log query tool + z-score anomaly check + LLM interpretation
-- [ ] Build Diagnosis agent (`agents/diagnosis.py`) — deploy-history + dependency-graph tools, structured output with confidence score
-- [ ] Build Remediation agent (`agents/remediation.py`) — action-enum-constrained proposal tool, no execution capability
-- [ ] Wire Monitor → Diagnosis → Remediation in `agents/graph.py` (LangGraph)
-- [ ] Run end-to-end on all 3 hardcoded incidents, manually sanity-check each output
+- [✅ ] Build `simulator/incident_generator.py` — 3 incident types (memory leak, bad deploy, dependency timeout)
+- [✅ ] Build Monitor agent (`agents/monitor.py`) — read-only log query tool + z-score anomaly check + LLM interpretation
+- [✅ ] Build Diagnosis agent (`agents/diagnosis.py`) — deploy-history + dependency-graph tools, structured output with confidence score
+- [ ✅] Build Remediation agent (`agents/remediation.py`) — action-enum-constrained proposal tool, no execution capability
+- [ ✅] Wire Monitor → Diagnosis → Remediation in `agents/graph.py` (LangGraph)
+- [✅ ] Run end-to-end on all 3 hardcoded incidents, manually sanity-check each output
 
 ### Exit criteria
-- [ ] One script run produces a diagnosis + proposed fix a human would find reasonable, for all 3 seed incidents
-- [ ] All agent outputs are structured Pydantic objects, not parsed free text
+- [✅ ] One script run produces a diagnosis + proposed fix a human would find reasonable, for all 3 seed incidents
+- [ ✅] All agent outputs are structured Pydantic objects, not parsed free text
 
 ### Notes / blockers
 _(add anything you hit here as you go)_
@@ -73,23 +73,23 @@ _(add anything you hit here as you go)_
 
 ## Phase 2 — Guardrails
 
-**Status:** 🔲
+**Status:** ✅
 **Goal:** no agent can reach "execution" without passing through explicit checks.
 
 **Description:** This phase is what differentiates the project from a typical agent demo. Every guardrail needs a corresponding test that actively tries to break it — a happy-path-only test doesn't prove anything. The Approval gate must be a real LangGraph interrupt node, not a faked sleep/poll loop.
 
 ### Tasks
-- [ ] Build `guardrails/action_schema.py` — strict enum + param validation for every action type
-- [ ] Build `guardrails/risk_classifier.py` — tags proposals `low`/`medium`/`high` based on action type + target
-- [ ] Insert a real Approval gate node in the LangGraph pipeline (human-in-the-loop interrupt)
-- [ ] Wire rejection routing — rejected proposals go back to Diagnosis agent with `approval_notes`
-- [ ] Build `guardrails/injection_guard.py` + a seeded incident with an embedded instruction in a log line; write an automated test proving Diagnosis agent doesn't follow it
-- [ ] Wire Presidio into the log pipeline for PII scrubbing before anything hits the LLM or gets logged
+- [✅ ] Build `guardrails/action_schema.py` — strict enum + param validation for every action type
+- [✅ ] Build `guardrails/risk_classifier.py` — tags proposals `low`/`medium`/`high` based on action type + target
+- [✅ ] Insert a real Approval gate node in the LangGraph pipeline (human-in-the-loop interrupt)
+- [✅ ] Wire rejection routing — rejected proposals go back to Diagnosis agent with `approval_notes`
+- [✅ ] Build `guardrails/injection_guard.py` + a seeded incident with an embedded instruction in a log line; write an automated test proving Diagnosis agent doesn't follow it
+- [✅ ] Wire Presidio into the log pipeline for PII scrubbing before anything hits the LLM or gets logged
 
 ### Exit criteria
-- [ ] Live demo: a `high` risk action cannot execute without approval
-- [ ] Automated test proves a malicious/injected log line doesn't hijack Diagnosis agent
-- [ ] Automated test proves a malformed/free-text action proposal is rejected, not coerced
+- [✅ ] Live demo: a `high` risk action cannot execute without approval
+- [✅ ] Automated test proves a malicious/injected log line doesn't hijack Diagnosis agent
+- [ ✅] Automated test proves a malformed/free-text action proposal is rejected, not coerced
 
 ### Notes / blockers
 _(add anything you hit here as you go)_
