@@ -14,8 +14,8 @@ import {
   Cpu,
   FileText,
   Terminal,
-  ShieldCheck,
   ShieldAlert,
+  ShieldCheck,
 } from "lucide-react";
 
 const API_BASE_URL = "http://localhost:8000";
@@ -24,16 +24,29 @@ export function App() {
   const [incidents, setIncidents] = useState<IncidentState[]>([]);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [selectedIncident, setSelectedIncident] = useState<IncidentState | null>(null);
-  
+
+  // API Health status
+  const [apiOnline, setApiOnline] = useState<boolean>(true);
+
   // Controls state
   const [selectedType, setSelectedType] = useState<IncidentType>("bad_deploy");
   const [loading, setLoading] = useState<boolean>(false);
-  
+
   // Approval Panel state
   const [actionLoading, setActionLoading] = useState<boolean>(false);
   const [typedAction, setTypedAction] = useState<string>("");
   const [showRejectInput, setShowRejectInput] = useState<boolean>(false);
   const [rejectReason, setRejectReason] = useState<string>("");
+
+  // Health check ping
+  const checkApiHealth = useCallback(async () => {
+    try {
+      await axios.get(`${API_BASE_URL}/`, { timeout: 2000 });
+      setApiOnline(true);
+    } catch {
+      setApiOnline(false);
+    }
+  }, []);
 
   // Fetch list of incidents for left sidebar feed
   const fetchIncidentsList = useCallback(async () => {
@@ -41,6 +54,7 @@ export function App() {
       const res = await axios.get<IncidentState[]>(`${API_BASE_URL}/incidents`);
       if (Array.isArray(res.data)) {
         setIncidents(res.data);
+        setApiOnline(true);
         // Auto-select first incident if none selected
         if (!selectedIncidentId && res.data.length > 0) {
           setSelectedIncidentId(res.data[0].incident_id);
@@ -48,6 +62,7 @@ export function App() {
       }
     } catch (err) {
       console.error("Error fetching incidents list:", err);
+      setApiOnline(false);
     }
   }, [selectedIncidentId]);
 
@@ -57,11 +72,19 @@ export function App() {
       const res = await axios.get<IncidentState>(`${API_BASE_URL}/incidents/${id}`);
       if (res.data) {
         setSelectedIncident(res.data);
+        setApiOnline(true);
       }
     } catch (err) {
       console.error(`Error fetching incident ${id}:`, err);
     }
   }, []);
+
+  // Health check interval every 5 seconds
+  useEffect(() => {
+    checkApiHealth();
+    const interval = setInterval(checkApiHealth, 5000);
+    return () => clearInterval(interval);
+  }, [checkApiHealth]);
 
   // Poll list of incidents every 3 seconds
   useEffect(() => {
@@ -94,11 +117,13 @@ export function App() {
         setSelectedIncidentId(newId);
         setTypedAction("");
         setShowRejectInput(false);
+        setApiOnline(true);
         await fetchIncidentsList();
         await fetchSelectedIncident(newId);
       }
     } catch (err) {
       console.error("Failed to simulate incident:", err);
+      setApiOnline(false);
     } finally {
       setLoading(false);
     }
@@ -110,10 +135,12 @@ export function App() {
     try {
       await axios.post(`${API_BASE_URL}/incidents/${incidentId}/approve`);
       setTypedAction("");
+      setApiOnline(true);
       await fetchSelectedIncident(incidentId);
       await fetchIncidentsList();
     } catch (err) {
       console.error(`Failed to approve incident ${incidentId}:`, err);
+      setApiOnline(false);
     } finally {
       setActionLoading(false);
     }
@@ -128,10 +155,12 @@ export function App() {
       });
       setRejectReason("");
       setShowRejectInput(false);
+      setApiOnline(true);
       await fetchSelectedIncident(incidentId);
       await fetchIncidentsList();
     } catch (err) {
       console.error(`Failed to reject incident ${incidentId}:`, err);
+      setApiOnline(false);
     } finally {
       setActionLoading(false);
     }
@@ -197,22 +226,35 @@ export function App() {
 
   return (
     <div className="h-screen w-full bg-gray-950 text-gray-100 flex overflow-hidden font-sans">
-      {/* Sidebar (Left) */}
+      {/* Sidebar (Left) - Fixed Width, Dark Gray */}
       <aside className="w-80 bg-gray-900 border-r border-gray-800 flex flex-col flex-shrink-0">
-        {/* Sidebar Header */}
-        <div className="p-5 border-b border-gray-800 flex items-center space-x-3">
-          <div className="p-2 bg-blue-600/20 text-blue-400 rounded-lg border border-blue-500/30">
-            <Shield className="w-6 h-6" />
+        {/* Sidebar Header with Brand & API Health Status Indicator */}
+        <div className="p-5 border-b border-gray-800 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="p-2 bg-blue-600/20 text-blue-400 rounded-lg border border-blue-500/30">
+              <Shield className="w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-white tracking-wide">
+                Agentic-SRE
+              </h1>
+              <p className="text-xs text-gray-400">Autonomous Incident Response</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg font-bold text-white tracking-wide flex items-center gap-1.5">
-              Agentic-SRE
-            </h1>
-            <p className="text-xs text-gray-400">Autonomous Incident Response</p>
+
+          {/* API Health Status Indicator (Green/Red Dot) */}
+          <div
+            className="flex items-center space-x-1.5 px-2 py-1 bg-gray-950 rounded-full border border-gray-800 text-[11px] font-medium"
+            title={apiOnline ? "API Connected (http://localhost:8000)" : "API Disconnected"}
+          >
+            <span className={`w-2.5 h-2.5 rounded-full ${apiOnline ? "bg-emerald-500 shadow-sm shadow-emerald-500/50 animate-pulse" : "bg-red-500"}`}></span>
+            <span className={apiOnline ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>
+              {apiOnline ? "API Online" : "Offline"}
+            </span>
           </div>
         </div>
 
-        {/* Sidebar Simulation Controls */}
+        {/* Sidebar Controls (Simulate dropdown & buttons) */}
         <div className="p-4 border-b border-gray-800 space-y-3 bg-gray-900/60">
           <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block">
             Simulate New Incident
@@ -254,7 +296,7 @@ export function App() {
         {/* Incident Feed Header */}
         <div className="px-4 py-3 border-b border-gray-800/80 bg-gray-950/40 flex items-center justify-between">
           <span className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
-            <Activity className="w-3.5 h-3.5 text-blue-400" /> Incidents Stream
+            <Activity className="w-3.5 h-3.5 text-blue-400" /> Incidents Feed
           </span>
           <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full font-mono">
             {incidents.length}
@@ -265,7 +307,7 @@ export function App() {
         <div className="flex-1 overflow-y-auto divide-y divide-gray-800/60">
           {incidents.length === 0 ? (
             <div className="p-8 text-center text-xs text-gray-500 italic">
-              No simulated incidents recorded. Click 'Simulate' above to start a test.
+              No simulated incidents recorded. Click 'Simulate' above to trigger the pipeline.
             </div>
           ) : (
             incidents.map((inc) => {
@@ -303,19 +345,19 @@ export function App() {
         </div>
       </aside>
 
-      {/* Main Content (Right) */}
-      <main className="flex-1 overflow-y-auto p-8 space-y-6">
+      {/* Main Canvas (Right) */}
+      <main className="flex-1 overflow-y-auto p-8 space-y-6 bg-gray-950">
         {!selectedIncident ? (
           <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-3 py-20">
             <Activity className="w-12 h-12 text-gray-700 animate-pulse" />
             <h3 className="text-lg font-semibold text-gray-400">No Incident Selected</h3>
             <p className="text-xs text-gray-600 max-w-sm text-center">
-              Select an incident card from the sidebar or click 'Simulate' to start a new multi-agent response pipeline.
+              Select an incident card from the sidebar feed or click 'Simulate' to launch an autonomous SRE investigation.
             </p>
           </div>
         ) : (
           <>
-            {/* Header: Incident ID, timestamp, status badge, Langfuse trace button */}
+            {/* Main Canvas Header: Incident ID, timestamp, status badge, and 'View Trace in Langfuse' button */}
             <div className="flex flex-wrap items-center justify-between gap-4 bg-gray-900 p-6 rounded-lg border border-gray-800 shadow-lg">
               <div className="space-y-1">
                 <div className="flex items-center space-x-3">
@@ -477,30 +519,30 @@ export function App() {
               </div>
             )}
 
-            {/* Diagnosis Grid (CSS Grid: grid grid-cols-2 gap-6 mt-6) */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-              {/* Left column: Symptoms Card */}
-              <div className="bg-gray-900 p-6 rounded-lg border border-gray-800 space-y-3">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2 border-b border-gray-800 pb-2">
+            {/* Diagnosis Grid (CSS Grid: grid grid-cols-1 md:grid-cols-2 gap-6 mt-6) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+              {/* Left Column: Symptoms Card (bg-gray-800 rounded-lg p-6) */}
+              <div className="bg-gray-800 rounded-lg p-6 border border-gray-700/60 space-y-3 shadow-md">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2 border-b border-gray-700 pb-2">
                   <FileText className="w-4 h-4 text-blue-400" /> Symptoms
                 </h3>
                 {selectedIncident.symptoms && selectedIncident.symptoms.length > 0 ? (
                   <ul className="space-y-2 text-xs text-gray-300">
                     {selectedIncident.symptoms.map((symptom, idx) => (
-                      <li key={idx} className="flex items-start gap-2 bg-gray-950 p-2.5 rounded border border-gray-800/80">
+                      <li key={idx} className="flex items-start gap-2 bg-gray-950 p-2.5 rounded border border-gray-800">
                         <span className="w-1.5 h-1.5 bg-blue-400 rounded-full mt-1.5 flex-shrink-0"></span>
                         <span className="leading-relaxed">{symptom}</span>
                       </li>
                     ))}
                   </ul>
                 ) : (
-                  <div className="text-xs text-gray-500 italic">No symptoms recorded yet.</div>
+                  <div className="text-xs text-gray-500 italic">No symptoms recorded.</div>
                 )}
               </div>
 
-              {/* Right column: Root Cause Hypothesis Card */}
-              <div className="bg-gray-900 p-6 rounded-lg border border-gray-800 space-y-4">
-                <div className="flex items-center justify-between border-b border-gray-800 pb-2">
+              {/* Right Column: Root Cause Hypothesis Card (bg-gray-800 rounded-lg p-6) */}
+              <div className="bg-gray-800 rounded-lg p-6 border border-gray-700/60 space-y-4 shadow-md">
+                <div className="flex items-center justify-between border-b border-gray-700 pb-2">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2">
                     <Cpu className="w-4 h-4 text-cyan-400" /> Root Cause Hypothesis
                   </h3>
@@ -524,7 +566,7 @@ export function App() {
                       <span>Confidence Calibration</span>
                       <span className="font-mono">{(selectedIncident.confidence_score * 100).toFixed(0)} / 100</span>
                     </div>
-                    <div className="w-full bg-gray-950 h-2 rounded-full overflow-hidden border border-gray-800">
+                    <div className="w-full bg-gray-950 h-2 rounded-full overflow-hidden border border-gray-700">
                       <div
                         className="bg-cyan-500 h-full transition-all duration-500"
                         style={{ width: `${selectedIncident.confidence_score * 100}%` }}
@@ -535,19 +577,19 @@ export function App() {
               </div>
             </div>
 
-            {/* Raw Signals (Full-width card containing JSON inside <pre>) */}
-            <div className="bg-gray-900 p-6 rounded-lg border border-gray-800 space-y-3">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2 border-b border-gray-800 pb-2">
+            {/* Raw Telemetry Signals (Syntax-highlighted JSON viewer block: pre className="bg-black text-green-400 p-4 rounded overflow-x-auto text-sm") */}
+            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700/60 space-y-3 shadow-md">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2 border-b border-gray-700 pb-2">
                 <Terminal className="w-4 h-4 text-green-400" /> Raw Telemetry Signals
               </h3>
-              <pre className="bg-black p-4 rounded text-green-400 text-sm overflow-x-auto font-mono max-h-60 border border-gray-800">
+              <pre className="bg-black text-green-400 p-4 rounded overflow-x-auto text-sm font-mono max-h-60 border border-gray-900">
                 {JSON.stringify(selectedIncident.raw_signals || {}, null, 2)}
               </pre>
             </div>
 
-            {/* Audit Trail (Timeline at bottom) */}
-            <div className="bg-gray-900 p-6 rounded-lg border border-gray-800 space-y-4">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2 border-b border-gray-800 pb-3">
+            {/* Audit Trail Timeline (Bottom vertical feed with border-l-2 border-blue-500) */}
+            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700/60 space-y-4 shadow-md">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2 border-b border-gray-700 pb-3">
                 <Activity className="w-4 h-4 text-emerald-400" /> Audit Trail Timeline
               </h3>
 
@@ -556,11 +598,11 @@ export function App() {
                   No events logged in the audit trail.
                 </div>
               ) : (
-                <div className="border-l-2 border-gray-700 pl-6 space-y-6 relative ml-2 my-2">
+                <div className="border-l-2 border-blue-500 pl-6 space-y-6 relative ml-2 my-2">
                   {selectedIncident.event_log.map((evt, idx) => (
                     <div key={idx} className="relative group">
                       {/* Timeline dot */}
-                      <div className="absolute -left-[31px] top-1 w-3 h-3 rounded-full bg-cyan-500 border-2 border-gray-900"></div>
+                      <div className="absolute -left-[31px] top-1 w-3 h-3 rounded-full bg-blue-500 border-2 border-gray-800 shadow"></div>
 
                       <div className="bg-gray-950 p-4 rounded border border-gray-800 text-xs space-y-1">
                         <div className="flex items-center justify-between text-gray-400">
