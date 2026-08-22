@@ -98,22 +98,22 @@ _(add anything you hit here as you go)_
 
 ## Phase 3 — Evals
 
-**Status:** 🔲
+**Status:**✅
 **Goal:** quantitative, automated scoring of the whole pipeline — the phase that most differentiates this project.
 
 **Description:** The golden set is the source of truth for "does this system work" — incomplete or lazy ground-truth entries will quietly break scoring later, so don't rush this. LLM-judge prompts should log their justification alongside the score so disagreements are debuggable. The CI regression suite is the single most interview-worthy artifact in the project — it should visibly block a regressing PR at least once before you're done.
 
 ### Tasks
-- [ ] Build `simulator/golden_set.json` — 15-20 incidents with ground-truth root cause, fix, and risk level, including 2-3 "trick" cases
-- [ ] Build `evals/harness.py` — runs full pipeline against golden set, auto-approving in eval mode, capturing diagnosis/fix/risk/latency/cost
-- [ ] Build `evals/judges.py` — LLM-judge scoring for semantic match on `root_cause_hypothesis`, with logged justification
-- [ ] Compute aggregate metrics: diagnosis accuracy, fix correctness, confidence calibration, false-positive rate
-- [ ] Build `evals/run_regression.py` + `evals/baseline.json`
-- [ ] Wire `.github/workflows/eval.yml` to run the suite on every push/PR and fail the build below threshold
+- [✅] Build `simulator/golden_set.json` — 15-20 incidents with ground-truth root cause, fix, and risk level, including 2-3 "trick" cases
+- [✅] Build `evals/harness.py` — runs full pipeline against golden set, auto-approving in eval mode, capturing diagnosis/fix/risk/latency/cost
+- [✅] Build `evals/judges.py` — LLM-judge scoring for semantic match on `root_cause_hypothesis`, with logged justification
+- [✅] Compute aggregate metrics: diagnosis accuracy, fix correctness, confidence calibration, false-positive rate
+- [✅] Build `evals/run_regression.py` + `evals/baseline.json`
+- [✅] Wire `.github/workflows/eval.yml` to run the suite on every push/PR and fail the build below threshold
 
 ### Exit criteria
-- [ ] `python evals/run_regression.py` outputs a full scorecard locally
-- [ ] CI is wired and has caught at least one real regression (screenshot/log this for later)
+- [✅] `python evals/run_regression.py` outputs a full scorecard locally
+- [✅] CI is wired and has caught at least one real regression (screenshot/log this for later)
 
 ### Notes / blockers
 _(add anything you hit here as you go)_
