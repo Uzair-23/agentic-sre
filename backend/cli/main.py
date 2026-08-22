@@ -17,18 +17,17 @@ from simulator.incident_generator import IncidentGenerator
 from agents.graph import run_incident_pipeline, incident_graph
 from agents.schemas import IncidentState
 
+from dotenv import load_dotenv
+load_dotenv()
+
+
 # App setup
 app = typer.Typer(help="Agentic-SRE CLI: Multi-Agent Incident Response & Remediation Engine")
 console = Console()
 
 
 @app.command()
-def resolve(
-    incident_type: str = typer.Argument(
-        ...,
-        help="Type of incident: memory_leak, bad_deploy, dependency_timeout, traffic_spike, config_drift",
-    )
-) -> None:
+def resolve(incident_type: str = typer.Argument(..., help="Type of incident: memory_leak, bad_deploy, dependency_timeout")):
     """
     Triggers an incident investigation for the specified incident type.
     """
