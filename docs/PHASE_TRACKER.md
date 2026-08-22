@@ -122,20 +122,20 @@ _(add anything you hit here as you go)_
 
 ## Phase 4 — Observability
 
-**Status:** 🔲
+**Status:** ✅
 **Goal:** every agent decision is traceable end to end.
 
 **Description:** Every new agent node must be wrapped with the Langfuse tracing callback — an untraced node breaks the audit story this whole project is selling. Eval-harness runs should be tagged distinctly from real/demo runs so the Langfuse UI stays useful for debugging rather than cluttered.
 
 ### Tasks
 - [ ] Wire `observability/tracing.py` — Langfuse callback wrapping every LangGraph node
-- [ ] Tag every trace with `incident_id`
-- [ ] Verify traces are complete in Langfuse's built-in UI before building anything custom
-- [ ] Tag eval-harness runs with `session=eval_regression` so they're filterable from real runs
-- [ ] Confirm cost-per-incident and latency-per-agent are visible in the dashboard
+- [✅] Tag every trace with `incident_id`
+- [✅] Verify traces are complete in Langfuse's built-in UI before building anything custom
+- [✅] Tag eval-harness runs with `session=eval_regression` so they're filterable from real runs
+- [✅] Confirm cost-per-incident and latency-per-agent are visible in the dashboard
 
 ### Exit criteria
-- [ ] Search Langfuse by `incident_id`, see the complete Monitor→Diagnosis→Remediation→Approval trace with cost and latency per step
+- [✅] Search Langfuse by `incident_id`, see the complete Monitor→Diagnosis→Remediation→Approval trace with cost and latency per step
 
 ### Notes / blockers
 _(add anything you hit here as you go)_
@@ -144,21 +144,21 @@ _(add anything you hit here as you go)_
 
 ## Phase 5 — UI
 
-**Status:** 🔲
+**Status:** ✅
 **Goal:** a demoable dashboard — makes the interview conversation visual, not "trust me, it works."
 
 **Description:** The Approval panel's typed-confirmation flow for high-risk actions is a guardrail requirement, not a design nicety — don't simplify it away under time pressure. A "replay" button that re-runs a golden incident live is what makes this demoable on demand in an interview without needing a real outage.
 
 ### Tasks
-- [ ] Build FastAPI endpoints: `POST /incidents/simulate`, `GET /incidents/{id}`, `POST /incidents/{id}/approve`, `POST /incidents/{id}/reject`, `GET /incidents/{id}/trace`
-- [ ] Build incident feed (list view with status badges)
-- [ ] Build incident detail view — renders the `event_log` as a timeline
-- [ ] Build Approval panel — risk badge + typed confirmation for `high` risk
-- [ ] Build/link Trace viewer (embed or link out to Langfuse)
-- [ ] Add a "replay golden incident" button for live demos
+- [✅] Build FastAPI endpoints: `POST /incidents/simulate`, `GET /incidents/{id}`, `POST /incidents/{id}/approve`, `POST /incidents/{id}/reject`, `GET /incidents/{id}/trace`
+- [✅] Build incident feed (list view with status badges)
+- [✅] Build incident detail view — renders the `event_log` as a timeline
+- [✅] Build Approval panel — risk badge + typed confirmation for `high` risk
+- [✅] Build/link Trace viewer (embed or link out to Langfuse)
+- [✅] Add a "replay golden incident" button for live demos
 
 ### Exit criteria
-- [ ] Open the dashboard, click "simulate incident," watch the feed populate live, approve/reject, open the trace — all without touching the terminal
+- [✅] Open the dashboard, click "simulate incident," watch the feed populate live, approve/reject, open the trace — all without touching the terminal
 
 ### Notes / blockers
 _(add anything you hit here as you go)_
