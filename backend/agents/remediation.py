@@ -18,7 +18,7 @@ class RemediationOutput(BaseModel):
         description="The target service name for the action."
     )
     params: Dict[str, Any] = Field(
-        description="Parameters required for the action (e.g., {'to_version': 'v2.3.0'} or {'replicas': 3})."
+        description="Parameters required for the action (e.g., {'to_version': 'v2.3.0'}, {'replicas': 3}, {'flag': 'enable_strict_auth', 'value': False})."
     )
     justification: str = Field(
         description="One-paragraph explanation justifying why this action fits the diagnosis."
@@ -30,8 +30,8 @@ class RemediationOutput(BaseModel):
 def run_remediation_agent(state: IncidentState) -> IncidentState:
     """
     Consumes an IncidentState containing diagnosis hypothesis and symptoms.
-    Selects an appropriate remediation action and appends the proposal to the state.
-    Returns a new copy of IncidentState without mutating the original in place.
+    Selects an appropriate remediation action based on strict SRE heuristics
+    and appends the proposal to the state without mutating the original state.
     """
     api_key = os.getenv("GROQ_API_KEY")
 
@@ -43,55 +43,68 @@ def run_remediation_agent(state: IncidentState) -> IncidentState:
 
     structured_llm = llm.with_structured_output(RemediationOutput)
 
+    system_prompt = (
+        "You are an expert SRE Remediation Agent. Select the most appropriate remediation action "
+        "strictly matching these rules:\n"
+        "- If the diagnosis involves a bad deploy, broken code, or memory leak from a new version, propose rollback.\n"
+        "- If the diagnosis involves a traffic spike or resource exhaustion without a leak, propose scale_up.\n"
+        "- If the diagnosis involves a dependency timeout or frozen process, propose restart_service.\n"
+        "- If the diagnosis involves config drift or feature flags, propose toggle_config_flag.\n\n"
+        "Never propose dangerous or arbitrary shell commands. Select only from the approved action types: "
+        "['rollback', 'restart_service', 'scale_up', 'toggle_config_flag']."
+    )
+
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "You are an expert SRE Remediation Agent. "
-            "Given the diagnosis hypothesis and symptoms, propose the best remediation action. "
-            "Never propose dangerous/arbitrary shell commands. Select only from the approved action types."
+            system_prompt,
         ),
         (
             "user",
-            "Incident Details:\n"
+            "Incident Context:\n"
             "Symptoms: {symptoms}\n"
-            "Root Cause Hypothesis: {hypothesis}\n"
-            "Raw Signals: {raw_signals}\n\n"
-            "Propose an appropriate remediation action."
+            "Root Cause Hypothesis: {hypothesis}\n\n"
+            "Select the single best remediation action, specify the target service name and relevant parameters, "
+            "and provide a clear justification.",
         ),
     ])
 
     chain = prompt | structured_llm
 
+    symptoms_str = "\n".join(f"- {s}" for s in state.symptoms) if state.symptoms else "No symptoms provided."
+    hypothesis_str = state.root_cause_hypothesis or "No root cause hypothesis provided."
+
     try:
         remediation: RemediationOutput = chain.invoke({
-            "symptoms": state.symptoms,
-            "hypothesis": state.root_cause_hypothesis or "Unknown root cause",
-            "raw_signals": state.raw_signals,
+            "symptoms": symptoms_str,
+            "hypothesis": hypothesis_str,
         })
     except Exception as e:
         print(f"Error invoking Groq LLM for remediation: {e}")
-        # Deterministic fallback logic
-        target_service = state.raw_signals.get("service", "payment-service")
-        hypothesis_lower = (state.root_cause_hypothesis or "").lower()
+        # Deterministic fallback logic adhering to the same heuristics
+        target_service = state.raw_signals.get("service", "payment-service") if state.raw_signals else "payment-service"
+        hyp_lower = hypothesis_str.lower()
+        symp_lower = symptoms_str.lower()
+        combined = f"{hyp_lower} {symp_lower}"
 
-        if "deploy" in hypothesis_lower or "v2." in hypothesis_lower or "version" in hypothesis_lower:
-            action_type = "rollback"
-            params = {"to_version": "v2.3.0"}
-        elif "memory" in hypothesis_lower or "oom" in hypothesis_lower or "leak" in hypothesis_lower:
-            action_type = "restart_service"
-            params = {"reason": "OOM recovery"}
-        elif "traffic" in hypothesis_lower or "latency" in hypothesis_lower or "load" in hypothesis_lower:
+        if any(k in combined for k in ["config", "flag", "feature_flag", "toggle"]):
+            action_type = "toggle_config_flag"
+            params = {"flag": "enable_strict_auth", "value": False}
+        elif any(k in combined for k in ["traffic", "spike", "surge", "queue", "capacity"]):
             action_type = "scale_up"
             params = {"replicas": 3}
-        else:
+        elif any(k in combined for k in ["timeout", "dependency", "exhaustion", "frozen", "deadlock"]):
             action_type = "restart_service"
-            params = {"reason": "Default restart recovery"}
+            params = {"reason": "Dependency timeout recovery"}
+        else:
+            action_type = "rollback"
+            params = {"to_version": "v2.3.0"}
 
         remediation = RemediationOutput(
             action_type=action_type,
             target=target_service,
             params=params,
-            justification=f"Automated fallback remediation for {target_service} based on hypothesis: {state.root_cause_hypothesis}",
+            justification=f"Automated fallback remediation for {target_service} based on hypothesis: {hypothesis_str}",
         )
 
     fix_proposal = FixProposal(
@@ -107,10 +120,8 @@ def run_remediation_agent(state: IncidentState) -> IncidentState:
         details=f"Proposed Action: {remediation.action_type} on '{remediation.target}'. Justification: {remediation.justification}",
     )
 
-    updated_event_log = list(state.event_log) + [remediation_event]
-
     # Return new copy of state without in-place mutation
     return state.model_copy(update={
         "proposed_fix": fix_proposal,
-        "event_log": updated_event_log,
+        "event_log": list(state.event_log) + [remediation_event],
     })

@@ -1,0 +1,37 @@
+[
+  {
+    "incident_id": "inc_gold_001",
+    "incident_type": "memory_leak",
+    "ground_truth_root_cause": "Memory leak introduced in deployment v2.3.1 of payment-service causing memory usage to climb steadily and trigger OOMKilled process restarts.",
+    "ground_truth_action": "rollback",
+    "ground_truth_risk": "high"
+  },
+  {
+    "incident_id": "inc_gold_002",
+    "incident_type": "bad_deploy",
+    "ground_truth_root_cause": "Faulty release v2.3.1 deployed on auth-service causing invalid token signature validation logic and high rates of HTTP 500 errors.",
+    "ground_truth_action": "rollback",
+    "ground_truth_risk": "high"
+  },
+  {
+    "incident_id": "inc_gold_003",
+    "incident_type": "dependency_timeout",
+    "ground_truth_root_cause": "Upstream database inventory-db connection exhaustion leading to severe request timeouts in downstream cart-service.",
+    "ground_truth_action": "restart_service",
+    "ground_truth_risk": "medium"
+  },
+  {
+    "incident_id": "inc_gold_004",
+    "incident_type": "traffic_spike",
+    "ground_truth_root_cause": "Sudden traffic surge on checkout-service exceeding existing replica count and causing CPU saturation and request queuing.",
+    "ground_truth_action": "scale_up",
+    "ground_truth_risk": "low"
+  },
+  {
+    "incident_id": "inc_gold_005",
+    "incident_type": "config_drift",
+    "ground_truth_root_cause": "Erroneously toggled feature flag enable_strict_auth on auth-service breaking valid client tokens.",
+    "ground_truth_action": "toggle_config_flag",
+    "ground_truth_risk": "medium"
+  }
+]

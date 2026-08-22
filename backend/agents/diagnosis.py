@@ -1,38 +1,13 @@
 import os
+import json
 from datetime import datetime
 from typing import List
+
 from pydantic import BaseModel, Field
-from langchain_core.tools import tool
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 
 from agents.schemas import IncidentState, Event
-
-
-# --- Mock Tools ---
-
-@tool
-def query_deploy_history(service: str) -> str:
-    """Query recent deployment history for a given service."""
-    if service in ["payment-service", "auth-service"]:
-        return "v2.3.1 deployed 10 mins ago"
-    return "No recent deploys"
-
-
-@tool
-def query_service_dependencies(service: str) -> str:
-    """Query service dependencies for a given service."""
-    if service == "cart-service":
-        return "Depends on: inventory-db, payment-service"
-    return "No known dependencies"
-
-
-@tool
-def query_recent_logs(service: str, window_minutes: int = 15) -> str:
-    """Query recent logs for a given service within a time window in minutes."""
-    if service in ["cart-service", "payment-service"]:
-        return "ERROR 500"
-    return "OOMKilled"
 
 
 # --- Output Schema ---
@@ -47,7 +22,7 @@ class DiagnosisOutput(BaseModel):
         le=1.0,
     )
     evidence: List[str] = Field(
-        description="List of evidence strings citing tool outputs or observations."
+        description="List of evidence strings derived strictly from the provided symptoms and raw signals."
     )
 
 
@@ -55,7 +30,8 @@ class DiagnosisOutput(BaseModel):
 
 def run_diagnosis_agent(state: IncidentState) -> IncidentState:
     """
-    Investigates an incident using state symptoms, raw signals, and tools.
+    Diagnoses an incident based strictly on the state's symptoms and raw_signals.
+    No mock tools — the LLM reasons purely from the provided context.
     Returns an updated IncidentState with root_cause_hypothesis, confidence_score,
     and a new Event appended to event_log without mutating the original state.
     """
@@ -67,73 +43,45 @@ def run_diagnosis_agent(state: IncidentState) -> IncidentState:
         temperature=0.1,
     )
 
-    tools = [query_deploy_history, query_service_dependencies, query_recent_logs]
-    tools_by_name = {t.name: t for t in tools}
-    llm_with_tools = llm.bind_tools(tools)
-
-    system_prompt = (
-        "You are an expert SRE Diagnosis Agent. Your job is to investigate production incidents, "
-        "formulate a root cause hypothesis, provide evidence, and assign a confidence score between 0.0 and 1.0.\n"
-        "Use available tools (query_deploy_history, query_service_dependencies, query_recent_logs) to investigate services."
-    )
-
-    user_prompt = (
-        f"Incident Symptoms: {state.symptoms}\n"
-        f"Raw Signals: {state.raw_signals}\n"
-        "Investigate using the available tools and determine the root cause hypothesis, evidence, and confidence score."
-    )
-
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt),
-    ]
-
-    # Tool calling loop
-    max_iterations = 5
-    for _ in range(max_iterations):
-        try:
-            response = llm_with_tools.invoke(messages)
-        except Exception as e:
-            print(f"Error during LLM tool invocation: {e}")
-            break
-
-        tool_calls = getattr(response, "tool_calls", None)
-        if not tool_calls:
-            break
-
-        messages.append(response)
-        for tc in tool_calls:
-            tool_name = tc.get("name")
-            tool_args = tc.get("args", {})
-            tool_id = tc.get("id", "")
-            if tool_name in tools_by_name:
-                try:
-                    tool_output = tools_by_name[tool_name].invoke(tool_args)
-                except Exception as err:
-                    tool_output = f"Error executing {tool_name}: {err}"
-            else:
-                tool_output = f"Unknown tool: {tool_name}"
-
-            messages.append(ToolMessage(content=str(tool_output), tool_call_id=tool_id))
-
-    # Force final output to match DiagnosisOutput schema
     structured_llm = llm.with_structured_output(DiagnosisOutput)
+
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            "You are an expert SRE. Diagnose the root cause of the incident based STRICTLY on the provided "
+            "symptoms and raw signals. Do not hallucinate memory leaks or OOM errors unless explicitly stated "
+            "in the symptoms. Provide a clear, concise root cause hypothesis.",
+        ),
+        (
+            "user",
+            "Incident Symptoms:\n{symptoms}\n\n"
+            "Raw Signals:\n{raw_signals}\n\n"
+            "Based solely on the above information, provide your root cause hypothesis, supporting evidence "
+            "drawn only from what is stated above, and a confidence score between 0.0 and 1.0.",
+        ),
+    ])
+
+    chain = prompt | structured_llm
+
+    symptoms_str = "\n".join(f"- {s}" for s in state.symptoms) if state.symptoms else "No symptoms provided."
+    raw_signals_str = json.dumps(state.raw_signals, indent=2) if state.raw_signals else "No raw signals provided."
+
     try:
-        diagnosis: DiagnosisOutput = structured_llm.invoke(messages)
+        diagnosis: DiagnosisOutput = chain.invoke({
+            "symptoms": symptoms_str,
+            "raw_signals": raw_signals_str,
+        })
     except Exception as e:
         print(f"Error invoking structured LLM output: {e}")
-        # Deterministic fallback if API fails or cannot format
-        target_service = state.raw_signals.get("service", "payment-service")
-        deploy_info = query_deploy_history.invoke({"service": target_service})
-        deps_info = query_service_dependencies.invoke({"service": target_service})
-        logs_info = query_recent_logs.invoke({"service": target_service, "window_minutes": 15})
+        # Deterministic fallback that stays faithful to the actual signals
+        primary_symptom = state.symptoms[0] if state.symptoms else "Unknown incident"
         diagnosis = DiagnosisOutput(
-            root_cause_hypothesis=f"Failure in {target_service} correlated with deployment '{deploy_info}' and logs '{logs_info}'.",
-            confidence_score=0.85,
-            evidence=[f"Deploy: {deploy_info}", f"Logs: {logs_info}", f"Dependencies: {deps_info}"]
+            root_cause_hypothesis=f"Unable to complete LLM diagnosis. Primary symptom observed: {primary_symptom}",
+            confidence_score=0.3,
+            evidence=[f"Symptom: {s}" for s in state.symptoms],
         )
 
-    # Append new Event documenting the diagnosis
+    # Append a new Event documenting the diagnosis result
     diagnosis_event = Event(
         timestamp=datetime.now(),
         source_agent="Diagnosis",
@@ -141,11 +89,9 @@ def run_diagnosis_agent(state: IncidentState) -> IncidentState:
         details=f"Hypothesis: {diagnosis.root_cause_hypothesis} | Confidence: {diagnosis.confidence_score:.2f}",
     )
 
-    updated_event_log = list(state.event_log) + [diagnosis_event]
-
-    # Return updated state without mutating original
+    # Return updated state — original state is not mutated
     return state.model_copy(update={
         "root_cause_hypothesis": diagnosis.root_cause_hypothesis,
         "confidence_score": diagnosis.confidence_score,
-        "event_log": updated_event_log,
+        "event_log": list(state.event_log) + [diagnosis_event],
     })

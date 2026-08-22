@@ -38,4 +38,18 @@ class IncidentGenerator:
                 logs.append(((self.base_time + timedelta(minutes=i)).isoformat(), "cart-service", "CRITICAL: Timeout waiting for inventory-db"))
             return sorted(logs, key=lambda x: x[0])
             
+        elif incident_type == "traffic_spike":
+            logs = self._generate_noise("checkout-service", 5)
+            for i in range(5, 10):
+                logs.append(((self.base_time + timedelta(minutes=i)).isoformat(), "checkout-service", f"WARN: CPU saturation {70 + i * 3}%, request queue depth {i * 20}"))
+            logs.append(((self.base_time + timedelta(minutes=10)).isoformat(), "checkout-service", "CRITICAL: Request queue full, shedding load"))
+            return sorted(logs, key=lambda x: x[0])
+
+        elif incident_type == "config_drift":
+            logs = self._generate_noise("auth-service", 5)
+            logs.append(((self.base_time + timedelta(minutes=5)).isoformat(), "auth-service", "config change event — enable_strict_auth toggled to true"))
+            for i in range(1, 5):
+                logs.append(((self.base_time + timedelta(minutes=5 + i)).isoformat(), "auth-service", "ERROR 500: Token rejected — strict auth validation failed due to config flag change"))
+            return sorted(logs, key=lambda x: x[0])
+
         raise ValueError(f"Unknown incident type: {incident_type}")
