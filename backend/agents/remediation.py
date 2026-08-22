@@ -46,9 +46,9 @@ def run_remediation_agent(state: IncidentState) -> IncidentState:
     system_prompt = (
         "You are an expert SRE Remediation Agent. Select the most appropriate remediation action "
         "strictly matching these rules:\n"
+        "- If the diagnosis mentions dependency timeouts, connection exhaustion, or upstream database issues, you MUST prioritize proposing restart_service, even if CPU spikes or slow queries are also mentioned. This is your highest priority rule.\n"
         "- If the diagnosis involves a bad deploy, broken code, or memory leak from a new version, propose rollback.\n"
         "- If the diagnosis involves a traffic spike or resource exhaustion without a leak, propose scale_up.\n"
-        "- If the diagnosis involves a dependency timeout or frozen process, propose restart_service.\n"
         "- If the diagnosis involves config drift or feature flags, propose toggle_config_flag.\n\n"
         "Never propose dangerous or arbitrary shell commands. Select only from the approved action types: "
         "['rollback', 'restart_service', 'scale_up', 'toggle_config_flag']."
@@ -87,15 +87,15 @@ def run_remediation_agent(state: IncidentState) -> IncidentState:
         symp_lower = symptoms_str.lower()
         combined = f"{hyp_lower} {symp_lower}"
 
-        if any(k in combined for k in ["config", "flag", "feature_flag", "toggle"]):
+        if any(k in combined for k in ["timeout", "dependency", "exhaustion", "frozen", "deadlock", "database"]):
+            action_type = "restart_service"
+            params = {"reason": "Dependency timeout recovery"}
+        elif any(k in combined for k in ["config", "flag", "feature_flag", "toggle"]):
             action_type = "toggle_config_flag"
             params = {"flag": "enable_strict_auth", "value": False}
         elif any(k in combined for k in ["traffic", "spike", "surge", "queue", "capacity"]):
             action_type = "scale_up"
             params = {"replicas": 3}
-        elif any(k in combined for k in ["timeout", "dependency", "exhaustion", "frozen", "deadlock"]):
-            action_type = "restart_service"
-            params = {"reason": "Dependency timeout recovery"}
         else:
             action_type = "rollback"
             params = {"to_version": "v2.3.0"}

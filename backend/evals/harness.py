@@ -120,4 +120,6 @@ def run_eval_harness(golden_dataset_path: str) -> list[dict[str, Any]]:
         print(f"  Judge score: {result['judge_score']:.2f} - {safe_justification}")
         print(f"  Latency: {result['latency_seconds']}s")
 
+        time.sleep(3)
+
     return results

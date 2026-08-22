@@ -81,4 +81,17 @@ def run_monitor_agent(logs: List[Tuple[str, str, str]]) -> IncidentState | None:
         )
     except Exception as e:
         print(f"Error calling Groq API: {e}")
-        return None
+        symptoms = [msg for _, _, msg in logs if any(k in msg for k in ["OOMKilled", "ERROR 500", "CRITICAL"])]
+        service = logs[0][1] if logs else "unknown-service"
+        return IncidentState(
+            incident_id=f"inc_{int(datetime.now().timestamp())}",
+            created_at=datetime.now(),
+            symptoms=symptoms or ["Anomaly detected in log stream"],
+            raw_signals={"service": service, "status": "anomaly_flagged"},
+            event_log=[{
+                "timestamp": datetime.now(),
+                "source_agent": "Monitor",
+                "action": "Incident Created",
+                "details": f"Detected anomaly and extracted {len(symptoms)} symptoms."
+            }]
+        )

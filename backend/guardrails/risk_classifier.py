@@ -6,14 +6,14 @@ def classify_risk(action_type: str, target: str = "") -> Literal["low", "medium"
     Classifies the blast-radius risk level of a proposed remediation action.
 
     Logic:
-    - If action is 'rollback', return 'high'.
-    - If action is 'restart_service', return 'medium'.
-    - If action is 'scale_up' or 'toggle_config_flag', return 'low'.
+    - 'rollback' -> 'high'
+    - 'restart_service' or 'toggle_config_flag' -> 'medium'
+    - 'scale_up' -> 'low'
     """
     if action_type == "rollback":
         return "high"
-    elif action_type == "restart_service":
+    elif action_type in ["restart_service", "toggle_config_flag"]:
         return "medium"
-    elif action_type in ["scale_up", "toggle_config_flag"]:
+    elif action_type == "scale_up":
         return "low"
     return "low"

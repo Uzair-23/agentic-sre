@@ -31,7 +31,7 @@ class DiagnosisOutput(BaseModel):
 def run_diagnosis_agent(state: IncidentState) -> IncidentState:
     """
     Diagnoses an incident based strictly on the state's symptoms and raw_signals.
-    No mock tools — the LLM reasons purely from the provided context.
+    Uses temperature 0.0 for strict deterministic JSON generation.
     Returns an updated IncidentState with root_cause_hypothesis, confidence_score,
     and a new Event appended to event_log without mutating the original state.
     """
@@ -40,17 +40,23 @@ def run_diagnosis_agent(state: IncidentState) -> IncidentState:
     llm = ChatGroq(
         api_key=api_key,
         model="openai/gpt-oss-20b",
-        temperature=0.1,
+        temperature=0.0,
     )
 
     structured_llm = llm.with_structured_output(DiagnosisOutput)
 
+    system_prompt = (
+        "You are an expert SRE. Diagnose the root cause based STRICTLY on the provided symptoms "
+        "and raw signals. You MUST include specific details in your hypothesis, such as exact deployment "
+        "version numbers (e.g., v2.3.1), specific HTTP error codes, or precise failure mechanisms "
+        "(e.g., connection exhaustion, memory leak). Return strictly valid JSON with no markdown "
+        "and no trailing commas."
+    )
+
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            "You are an expert SRE. Diagnose the root cause of the incident based STRICTLY on the provided "
-            "symptoms and raw signals. Do not hallucinate memory leaks or OOM errors unless explicitly stated "
-            "in the symptoms. Provide a clear, concise root cause hypothesis.",
+            system_prompt,
         ),
         (
             "user",

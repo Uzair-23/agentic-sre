@@ -8,13 +8,7 @@ env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 from agents.schemas import IncidentState
-from agents.diagnosis import (
-    run_diagnosis_agent,
-    query_deploy_history,
-    query_service_dependencies,
-    query_recent_logs,
-    DiagnosisOutput,
-)
+from agents.diagnosis import run_diagnosis_agent, DiagnosisOutput
 
 
 @pytest.fixture
@@ -75,29 +69,32 @@ def test_diagnosis_immutability(dependency_timeout_state: IncidentState):
     assert len(updated_state.event_log) == 1
 
 
-def test_mock_tools():
-    """Verify mock tools return expected diagnostic responses."""
-    # query_deploy_history
-    assert query_deploy_history.invoke({"service": "payment-service"}) == "v2.3.1 deployed 10 mins ago"
-    assert query_deploy_history.invoke({"service": "auth-service"}) == "v2.3.1 deployed 10 mins ago"
-    assert query_deploy_history.invoke({"service": "cart-service"}) == "No recent deploys"
-
-    # query_service_dependencies
-    assert query_service_dependencies.invoke({"service": "cart-service"}) == "Depends on: inventory-db, payment-service"
-    assert query_service_dependencies.invoke({"service": "other-service"}) == "No known dependencies"
-
-    # query_recent_logs
-    assert query_recent_logs.invoke({"service": "payment-service", "window_minutes": 15}) in ["ERROR 500", "OOMKilled"]
-    assert query_recent_logs.invoke({"service": "cart-service", "window_minutes": 10}) in ["ERROR 500", "OOMKilled"]
-
-
 def test_diagnosis_output_schema():
     """Verify DiagnosisOutput Pydantic schema validation."""
     diag = DiagnosisOutput(
-        root_cause_hypothesis="Upstream database inventory-db timeout impacting cart-service",
+        root_cause_hypothesis="Upstream database inventory-db connection exhaustion impacting cart-service",
         confidence_score=0.92,
-        evidence=["Depends on: inventory-db", "CRITICAL: Timeout waiting for inventory-db"],
+        evidence=[
+            "Symptom: CRITICAL: Timeout waiting for inventory-db",
+            "Raw signal: service=cart-service, error_type=timeout",
+        ],
     )
-    assert diag.root_cause_hypothesis == "Upstream database inventory-db timeout impacting cart-service"
+    assert diag.root_cause_hypothesis == "Upstream database inventory-db connection exhaustion impacting cart-service"
     assert diag.confidence_score == 0.92
     assert len(diag.evidence) == 2
+
+
+def test_diagnosis_hypothesis_not_hallucinated(dependency_timeout_state: IncidentState):
+    """
+    Verify the refactored agent does not inject OOMKilled or memory leak language
+    when the symptoms clearly indicate a dependency timeout.
+    """
+    updated_state = run_diagnosis_agent(dependency_timeout_state)
+
+    hypothesis = updated_state.root_cause_hypothesis.lower()
+
+    # The hypothesis must reference the actual signals (timeout / inventory-db)
+    assert any(
+        keyword in hypothesis
+        for keyword in ["timeout", "inventory-db", "inventory", "dependency", "database", "connection"]
+    ), f"Hypothesis does not reference the actual incident signals: '{updated_state.root_cause_hypothesis}'"

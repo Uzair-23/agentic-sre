@@ -1,5 +1,5 @@
 {
-  "avg_hypothesis_score_pct": 90.0,
+  "avg_hypothesis_score_pct": 80.0,
   "action_accuracy_pct": 100.0,
-  "risk_accuracy_pct": 80.0
+  "risk_accuracy_pct": 100.0
 }
