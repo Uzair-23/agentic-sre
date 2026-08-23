@@ -19,6 +19,7 @@ services:
     ports:
       - 127.0.0.1:3030:3030
     environment: &langfuse-worker-env
+      LANGFUSE_MIGRATION_V4_WRITE_MODE: dual
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/postgres} # CHANGEME
       SALT: ${SALT:-mysalt} # CHANGEME
