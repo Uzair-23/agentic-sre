@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import axios from "axios";
+import { useState, useEffect, useCallback, useRef } from "react";
+import axios, { type AxiosError } from "axios";
 import type { IncidentState, IncidentType } from "./types";
 import {
   Shield,
@@ -11,35 +11,80 @@ import {
   Clock,
   ExternalLink,
   Activity,
-  Cpu,
-  FileText,
   Terminal,
-  ShieldAlert,
-  ShieldCheck,
+  ChevronRight,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 
 const API_BASE_URL = "http://localhost:8000";
 
+/** Returns true when an incident has reached a terminal state (no more polling needed) */
+function isTerminal(inc: IncidentState | null): boolean {
+  if (!inc) return false;
+  return (
+    inc.approval_status === "approved" ||
+    inc.approval_status === "rejected" ||
+    inc.status === "no_anomaly" ||
+    inc.status === "error"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Toast notification (lightweight, no library)
+// ---------------------------------------------------------------------------
+interface Toast {
+  id: number;
+  message: string;
+  kind: "error" | "info" | "success";
+}
+
+let toastCounter = 0;
+
 export function App() {
   const [incidents, setIncidents] = useState<IncidentState[]>([]);
-  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
-  const [selectedIncident, setSelectedIncident] = useState<IncidentState | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [incident, setIncident] = useState<IncidentState | null>(null);
 
-  // API Health status
-  const [apiOnline, setApiOnline] = useState<boolean>(true);
+  const [apiOnline, setApiOnline] = useState<boolean | null>(null); // null = unknown
+  const [simType, setSimType] = useState<IncidentType>("bad_deploy");
+  const [simLoading, setSimLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
-  // Controls state
-  const [selectedType, setSelectedType] = useState<IncidentType>("bad_deploy");
-  const [loading, setLoading] = useState<boolean>(false);
+  // Approval gate local state
+  const [typedConfirm, setTypedConfirm] = useState("");
+  const [showReject, setShowReject] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
 
-  // Approval Panel state
-  const [actionLoading, setActionLoading] = useState<boolean>(false);
-  const [typedAction, setTypedAction] = useState<string>("");
-  const [showRejectInput, setShowRejectInput] = useState<boolean>(false);
-  const [rejectReason, setRejectReason] = useState<string>("");
+  // Toasts
+  const [toasts, setToasts] = useState<Toast[]>([]);
 
-  // Health check ping
-  const checkApiHealth = useCallback(async () => {
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const feedPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ---------------------------------------------------------------------------
+  // Toast helpers
+  // ---------------------------------------------------------------------------
+  const pushToast = useCallback((message: string, kind: Toast["kind"] = "error") => {
+    const id = ++toastCounter;
+    setToasts((prev) => [...prev, { id, message, kind }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000);
+  }, []);
+
+  function dismissToast(id: number) {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }
+
+  function apiErrorMessage(err: unknown): string {
+    const e = err as AxiosError<{ detail?: string }>;
+    if (!e.response && e.code === "ERR_NETWORK") return "Cannot reach API — is the server running on :8000?";
+    return e.response?.data?.detail ?? e.message ?? "Unexpected error";
+  }
+
+  // ---------------------------------------------------------------------------
+  // API Health
+  // ---------------------------------------------------------------------------
+  const checkHealth = useCallback(async () => {
     try {
       await axios.get(`${API_BASE_URL}/`, { timeout: 2000 });
       setApiOnline(true);
@@ -48,455 +93,422 @@ export function App() {
     }
   }, []);
 
-  // Fetch list of incidents for left sidebar feed
-  const fetchIncidentsList = useCallback(async () => {
+  useEffect(() => {
+    checkHealth();
+    const t = setInterval(checkHealth, 8000);
+    return () => clearInterval(t);
+  }, [checkHealth]);
+
+  // ---------------------------------------------------------------------------
+  // Feed polling (every 4 s)
+  // ---------------------------------------------------------------------------
+  const fetchFeed = useCallback(async () => {
     try {
       const res = await axios.get<IncidentState[]>(`${API_BASE_URL}/incidents`);
       if (Array.isArray(res.data)) {
         setIncidents(res.data);
         setApiOnline(true);
-        // Auto-select first incident if none selected
-        if (!selectedIncidentId && res.data.length > 0) {
-          setSelectedIncidentId(res.data[0].incident_id);
+        if (!selectedId && res.data.length > 0) {
+          setSelectedId(res.data[0].incident_id);
         }
       }
     } catch (err) {
-      console.error("Error fetching incidents list:", err);
       setApiOnline(false);
+      // silent — health dot already shows offline
+      console.error("Feed poll error:", err);
     }
-  }, [selectedIncidentId]);
+  }, [selectedId]);
 
-  // Fetch specific selected incident details
-  const fetchSelectedIncident = useCallback(async (id: string) => {
+  useEffect(() => {
+    fetchFeed();
+    feedPollingRef.current = setInterval(fetchFeed, 4000);
+    return () => {
+      if (feedPollingRef.current) clearInterval(feedPollingRef.current);
+    };
+  }, [fetchFeed]);
+
+  // ---------------------------------------------------------------------------
+  // Incident detail polling (every 2 s, stops on terminal state)
+  // ---------------------------------------------------------------------------
+  const fetchIncident = useCallback(async (id: string) => {
     try {
       const res = await axios.get<IncidentState>(`${API_BASE_URL}/incidents/${id}`);
-      if (res.data) {
-        setSelectedIncident(res.data);
-        setApiOnline(true);
+      setIncident(res.data);
+      setApiOnline(true);
+      // Stop polling once terminal
+      if (isTerminal(res.data)) {
+        if (pollingRef.current) {
+          clearInterval(pollingRef.current);
+          pollingRef.current = null;
+        }
       }
     } catch (err) {
-      console.error(`Error fetching incident ${id}:`, err);
+      console.error("Incident fetch error:", err);
+      // Don't wipe existing incident data on transient failures
     }
   }, []);
 
-  // Health check interval every 5 seconds
   useEffect(() => {
-    checkApiHealth();
-    const interval = setInterval(checkApiHealth, 5000);
-    return () => clearInterval(interval);
-  }, [checkApiHealth]);
+    if (!selectedId) return;
+    // Reset + start fresh poll
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    fetchIncident(selectedId);
+    pollingRef.current = setInterval(() => fetchIncident(selectedId), 2000);
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, [selectedId, fetchIncident]);
 
-  // Poll list of incidents every 3 seconds
-  useEffect(() => {
-    fetchIncidentsList();
-    const interval = setInterval(fetchIncidentsList, 3000);
-    return () => clearInterval(interval);
-  }, [fetchIncidentsList]);
-
-  // Poll active selected incident every 2 seconds
-  useEffect(() => {
-    if (!selectedIncidentId) return;
-
-    fetchSelectedIncident(selectedIncidentId);
-    const interval = setInterval(() => {
-      fetchSelectedIncident(selectedIncidentId);
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [selectedIncidentId, fetchSelectedIncident]);
-
-  // Handler: Simulate incident
-  const handleSimulate = async (incidentTypeToRun: IncidentType) => {
-    setLoading(true);
+  // ---------------------------------------------------------------------------
+  // Handlers
+  // ---------------------------------------------------------------------------
+  async function handleSimulate(type: IncidentType) {
+    setSimLoading(true);
     try {
-      const res = await axios.post<{ incident_id: string }>(`${API_BASE_URL}/incidents/simulate`, {
-        incident_type: incidentTypeToRun,
-      });
-      if (res.data && res.data.incident_id) {
-        const newId = res.data.incident_id;
-        setSelectedIncidentId(newId);
-        setTypedAction("");
-        setShowRejectInput(false);
-        setApiOnline(true);
-        await fetchIncidentsList();
-        await fetchSelectedIncident(newId);
-      }
+      const res = await axios.post<{ incident_id: string }>(
+        `${API_BASE_URL}/incidents/simulate`,
+        { incident_type: type }
+      );
+      const newId = res.data.incident_id;
+      setSelectedId(newId);
+      setIncident(null);
+      setTypedConfirm("");
+      setShowReject(false);
+      setApiOnline(true);
+      await fetchFeed();
     } catch (err) {
-      console.error("Failed to simulate incident:", err);
-      setApiOnline(false);
+      pushToast(`Simulation failed: ${apiErrorMessage(err)}`);
     } finally {
-      setLoading(false);
+      setSimLoading(false);
     }
-  };
+  }
 
-  // Handler: HITL Approve Action
-  const handleApprove = async (incidentId: string) => {
+  async function handleApprove() {
+    if (!selectedId) return;
     setActionLoading(true);
     try {
-      await axios.post(`${API_BASE_URL}/incidents/${incidentId}/approve`);
-      setTypedAction("");
-      setApiOnline(true);
-      await fetchSelectedIncident(incidentId);
-      await fetchIncidentsList();
+      await axios.post(`${API_BASE_URL}/incidents/${selectedId}/approve`);
+      setTypedConfirm("");
+      await fetchIncident(selectedId);
+      await fetchFeed();
+      pushToast("Remediation approved and executed.", "success");
     } catch (err) {
-      console.error(`Failed to approve incident ${incidentId}:`, err);
-      setApiOnline(false);
+      pushToast(`Approve failed: ${apiErrorMessage(err)}`);
     } finally {
       setActionLoading(false);
     }
-  };
+  }
 
-  // Handler: HITL Reject Action
-  const handleReject = async (incidentId: string) => {
+  async function handleReject() {
+    if (!selectedId) return;
     setActionLoading(true);
     try {
-      await axios.post(`${API_BASE_URL}/incidents/${incidentId}/reject`, {
-        reason: rejectReason || "Rejected by operator",
+      await axios.post(`${API_BASE_URL}/incidents/${selectedId}/reject`, {
+        reason: rejectReason.trim() || "Rejected by operator",
       });
       setRejectReason("");
-      setShowRejectInput(false);
-      setApiOnline(true);
-      await fetchSelectedIncident(incidentId);
-      await fetchIncidentsList();
+      setShowReject(false);
+      await fetchIncident(selectedId);
+      await fetchFeed();
+      pushToast("Incident rejected.", "info");
     } catch (err) {
-      console.error(`Failed to reject incident ${incidentId}:`, err);
-      setApiOnline(false);
+      pushToast(`Reject failed: ${apiErrorMessage(err)}`);
     } finally {
       setActionLoading(false);
     }
-  };
+  }
 
-  // Handler: View Trace in Langfuse
-  const handleViewTrace = async (incidentId: string) => {
+  async function handleViewTrace() {
+    if (!selectedId) return;
     try {
-      const res = await axios.get<{ trace_url: string }>(`${API_BASE_URL}/incidents/${incidentId}/trace`);
-      if (res.data && res.data.trace_url) {
-        window.open(res.data.trace_url, "_blank", "noopener,noreferrer");
-      }
-    } catch (err) {
-      console.error("Failed to fetch trace URL:", err);
-      window.open(`https://us.cloud.langfuse.com/project/agentic-sre/traces/${incidentId}`, "_blank");
-    }
-  };
-
-  // Helper for Status Badge
-  const renderStatusBadge = (inc: IncidentState, isLarge = false) => {
-    const sizeClasses = isLarge ? "px-3.5 py-1 text-sm" : "px-2.5 py-0.5 text-xs";
-
-    if (inc.approval_status === "approved") {
-      return (
-        <span className={`${sizeClasses} rounded-full font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5`}>
-          <CheckCircle2 className={isLarge ? "w-4 h-4" : "w-3 h-3"} /> Resolved
-        </span>
+      const res = await axios.get<{ trace_url: string }>(`${API_BASE_URL}/incidents/${selectedId}/trace`);
+      window.open(res.data.trace_url, "_blank", "noopener,noreferrer");
+    } catch {
+      window.open(
+        `https://us.cloud.langfuse.com/project/agentic-sre/traces/${selectedId}`,
+        "_blank"
       );
     }
-    if (inc.approval_status === "rejected") {
-      return (
-        <span className={`${sizeClasses} rounded-full font-semibold bg-red-500/20 text-red-400 border border-red-500/30 flex items-center gap-1.5`}>
-          <XCircle className={isLarge ? "w-4 h-4" : "w-3 h-3"} /> Rejected
-        </span>
-      );
-    }
-    if (inc.proposed_fix && !inc.approval_status) {
-      return (
-        <span className={`${sizeClasses} rounded-full font-semibold bg-orange-500/20 text-orange-400 border border-orange-500/30 flex items-center gap-1.5 animate-pulse`}>
-          <ShieldAlert className={isLarge ? "w-4 h-4" : "w-3 h-3"} /> Awaiting Approval
-        </span>
-      );
-    }
-    if (inc.status === "pending") {
-      return (
-        <span className={`${sizeClasses} rounded-full font-semibold bg-gray-800 text-gray-300 border border-gray-700 flex items-center gap-1.5`}>
-          <Clock className={isLarge ? "w-4 h-4" : "w-3 h-3"} /> Pending
-        </span>
-      );
-    }
-    return (
-      <span className={`${sizeClasses} rounded-full font-semibold bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center gap-1.5`}>
-        <Cpu className={isLarge ? "w-4 h-4" : "w-3 h-3"} /> Investigating
-      </span>
-    );
-  };
+  }
 
-  // Check strict guardrail approval enablement
-  const proposedFix = selectedIncident?.proposed_fix;
-  const isHighRisk = selectedIncident?.risk_level === "high";
-  const requiredActionName = proposedFix?.action_type || "";
-  const isApproveEnabled = !isHighRisk || typedAction.trim().toLowerCase() === requiredActionName.toLowerCase();
+  function selectIncident(id: string) {
+    setSelectedId(id);
+    setIncident(null);
+    setTypedConfirm("");
+    setShowReject(false);
+    setRejectReason("");
+  }
 
+  // ---------------------------------------------------------------------------
+  // Derived values
+  // ---------------------------------------------------------------------------
+  const fix = incident?.proposed_fix;
+  const isHighRisk = incident?.risk_level === "high";
+  const confirmTarget = fix?.action_type ?? "";
+  const approveEnabled =
+    !isHighRisk || typedConfirm.trim().toLowerCase() === confirmTarget.toLowerCase();
+
+  // ---------------------------------------------------------------------------
+  // Status helpers
+  // ---------------------------------------------------------------------------
+  function statusLabel(inc: IncidentState): { label: string; color: string } {
+    if (inc.approval_status === "approved")
+      return { label: "Resolved", color: "text-emerald-400" };
+    if (inc.approval_status === "rejected")
+      return { label: "Rejected", color: "text-red-400" };
+    if (inc.proposed_fix && !inc.approval_status)
+      return { label: "Awaiting Approval", color: "text-amber-400" };
+    if (inc.status === "pending")
+      return { label: "Pending", color: "text-gray-500" };
+    return { label: "Investigating", color: "text-blue-400" };
+  }
+
+  function riskBadge(level: string | null | undefined) {
+    const map: Record<string, string> = {
+      high: "text-red-400 border-red-900/60",
+      medium: "text-amber-400 border-amber-900/60",
+      low: "text-emerald-400 border-emerald-900/60",
+    };
+    return map[level ?? ""] ?? "text-gray-400 border-white/10";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
   return (
-    <div className="h-screen w-full bg-gray-950 text-gray-100 flex overflow-hidden font-sans">
-      {/* Sidebar (Left) - Fixed Width, Dark Gray */}
-      <aside className="w-80 bg-gray-900 border-r border-gray-800 flex flex-col flex-shrink-0">
-        {/* Sidebar Header with Brand & API Health Status Indicator */}
-        <div className="p-5 border-b border-gray-800 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="p-2 bg-blue-600/20 text-blue-400 rounded-lg border border-blue-500/30">
-              <Shield className="w-6 h-6" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold text-white tracking-wide">
-                Agentic-SRE
-              </h1>
-              <p className="text-xs text-gray-400">Autonomous Incident Response</p>
-            </div>
-          </div>
+    <div className="h-screen w-full bg-[#0a0a0a] text-gray-100 flex overflow-hidden font-sans antialiased tracking-tight">
 
-          {/* API Health Status Indicator (Green/Red Dot) */}
+      {/* ── Toast stack ────────────────────────────────────────────────── */}
+      <div className="fixed top-4 right-4 z-50 space-y-2 pointer-events-none">
+        {toasts.map((t) => (
           <div
-            className="flex items-center space-x-1.5 px-2 py-1 bg-gray-950 rounded-full border border-gray-800 text-[11px] font-medium"
-            title={apiOnline ? "API Connected (http://localhost:8000)" : "API Disconnected"}
+            key={t.id}
+            onClick={() => dismissToast(t.id)}
+            className={`pointer-events-auto flex items-start gap-3 px-4 py-3 rounded-md border text-sm shadow-lg cursor-pointer transition-all
+              ${t.kind === "error" ? "bg-[#1a0808] border-red-900/60 text-red-300" : ""}
+              ${t.kind === "success" ? "bg-[#081a0e] border-emerald-900/60 text-emerald-300" : ""}
+              ${t.kind === "info" ? "bg-[#111] border-white/10 text-gray-300" : ""}
+            `}
           >
-            <span className={`w-2.5 h-2.5 rounded-full ${apiOnline ? "bg-emerald-500 shadow-sm shadow-emerald-500/50 animate-pulse" : "bg-red-500"}`}></span>
-            <span className={apiOnline ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>
-              {apiOnline ? "API Online" : "Offline"}
+            <span className="flex-1">{t.message}</span>
+            <XCircle className="w-4 h-4 flex-shrink-0 opacity-60 mt-0.5" />
+          </div>
+        ))}
+      </div>
+
+      {/* ── Sidebar ────────────────────────────────────────────────────── */}
+      <aside className="w-72 flex flex-col flex-shrink-0 bg-[#111111] border-r border-white/10">
+
+        {/* Brand */}
+        <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Shield className="w-4 h-4 text-gray-400" />
+            <span className="text-sm font-semibold text-gray-100">Agentic SRE</span>
+          </div>
+          {/* API health dot */}
+          <div className="flex items-center gap-1.5 text-xs" title={`API: ${apiOnline === null ? "checking…" : apiOnline ? "online" : "offline"}`}>
+            {apiOnline === false
+              ? <WifiOff className="w-3.5 h-3.5 text-red-500" />
+              : <Wifi className={`w-3.5 h-3.5 ${apiOnline ? "text-emerald-500" : "text-gray-600"}`} />
+            }
+            <span className={`font-mono ${apiOnline ? "text-emerald-500" : apiOnline === false ? "text-red-500" : "text-gray-600"}`}>
+              {apiOnline === null ? "…" : apiOnline ? "online" : "offline"}
             </span>
           </div>
         </div>
 
-        {/* Sidebar Controls (Simulate dropdown & buttons) */}
-        <div className="p-4 border-b border-gray-800 space-y-3 bg-gray-900/60">
-          <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block">
-            Simulate New Incident
-          </label>
-
+        {/* Simulate controls */}
+        <div className="px-5 py-4 border-b border-white/10 space-y-3">
+          <p className="text-[11px] font-medium text-gray-600 uppercase tracking-widest">Simulate</p>
           <select
-            value={selectedType}
-            onChange={(e) => setSelectedType(e.target.value as IncidentType)}
-            className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500 font-medium"
+            value={simType}
+            onChange={(e) => setSimType(e.target.value as IncidentType)}
+            className="w-full bg-black border border-white/10 rounded-md px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-white/30 transition"
           >
-            <option value="bad_deploy">Bad Deploy (v2.3.1)</option>
-            <option value="memory_leak">Memory Leak (Payment Service)</option>
-            <option value="dependency_timeout">Dependency Timeout (DB Exhaustion)</option>
-            <option value="traffic_spike">Traffic Spike (Black Friday Surge)</option>
-            <option value="config_drift">Config Drift (Auth Flag Mismatch)</option>
+            <option value="bad_deploy">Bad Deploy</option>
+            <option value="memory_leak">Memory Leak</option>
+            <option value="dependency_timeout">Dependency Timeout</option>
+            <option value="traffic_spike">Traffic Spike</option>
+            <option value="config_drift">Config Drift</option>
           </select>
-
           <div className="flex gap-2">
             <button
-              onClick={() => handleSimulate(selectedType)}
-              disabled={loading}
-              className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg flex items-center justify-center gap-2 transition-all shadow cursor-pointer disabled:opacity-50"
+              onClick={() => handleSimulate(simType)}
+              disabled={simLoading}
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-gray-200 transition disabled:opacity-40 cursor-pointer"
             >
-              <Play className="w-4 h-4 fill-current" />
-              {loading ? "Running..." : "Simulate"}
+              <Play className="w-3.5 h-3.5 fill-black" />
+              {simLoading ? "Starting…" : "Run"}
             </button>
-
             <button
               onClick={() => handleSimulate("bad_deploy")}
-              disabled={loading}
-              title="Replay Golden Incident"
-              className="px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-amber-300 rounded-lg flex items-center justify-center transition-all cursor-pointer disabled:opacity-50"
+              disabled={simLoading}
+              title="Replay golden incident (bad_deploy)"
+              className="px-3 py-2 border border-white/10 rounded-md text-gray-500 hover:text-gray-300 hover:border-white/20 transition disabled:opacity-40 cursor-pointer"
             >
-              <RotateCcw className="w-4 h-4" />
+              <RotateCcw className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
 
-        {/* Incident Feed Header */}
-        <div className="px-4 py-3 border-b border-gray-800/80 bg-gray-950/40 flex items-center justify-between">
-          <span className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
-            <Activity className="w-3.5 h-3.5 text-blue-400" /> Incidents Feed
-          </span>
-          <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full font-mono">
-            {incidents.length}
-          </span>
+        {/* Incident feed */}
+        <div className="px-5 py-3 border-b border-white/10 flex items-center justify-between">
+          <p className="text-[11px] font-medium text-gray-600 uppercase tracking-widest">Incidents</p>
+          <span className="text-[11px] font-mono text-gray-600">{incidents.length}</span>
         </div>
 
-        {/* Incident Feed Scrollable List */}
-        <div className="flex-1 overflow-y-auto divide-y divide-gray-800/60">
+        <div className="flex-1 overflow-y-auto">
           {incidents.length === 0 ? (
-            <div className="p-8 text-center text-xs text-gray-500 italic">
-              No simulated incidents recorded. Click 'Simulate' above to trigger the pipeline.
-            </div>
+            <p className="px-5 py-6 text-xs text-gray-600 italic">No incidents yet.</p>
           ) : (
             incidents.map((inc) => {
-              const isSelected = inc.incident_id === selectedIncidentId;
+              const active = inc.incident_id === selectedId;
+              const { label, color } = statusLabel(inc);
               return (
-                <div
+                <button
                   key={inc.incident_id}
-                  onClick={() => {
-                    setSelectedIncidentId(inc.incident_id);
-                    setTypedAction("");
-                    setShowRejectInput(false);
-                  }}
-                  className={`p-4 border-b border-gray-800 hover:bg-gray-800 cursor-pointer transition-colors ${
-                    isSelected ? "bg-gray-800/90 border-l-4 border-l-blue-500" : ""
-                  }`}
+                  onClick={() => selectIncident(inc.incident_id)}
+                  className={`w-full text-left px-5 py-3.5 border-b border-white/5 hover:bg-white/5 transition flex items-center justify-between gap-2 group
+                    ${active ? "bg-white/5" : ""}`}
                 >
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="font-mono text-xs font-bold text-gray-200">
-                      ID: {inc.incident_id.slice(0, 8)}...
-                    </span>
-                    {renderStatusBadge(inc)}
-                  </div>
-                  <div className="text-xs text-gray-400 capitalize font-medium">
-                    Type: {inc.incident_type || "Unknown"}
-                  </div>
-                  {inc.root_cause_hypothesis && (
-                    <p className="text-[11px] text-gray-500 mt-1 line-clamp-1 italic">
-                      "{inc.root_cause_hypothesis}"
+                  <div className="min-w-0">
+                    <p className="text-xs font-mono text-gray-300 truncate">
+                      {inc.incident_id.slice(0, 8)}…
                     </p>
-                  )}
-                </div>
+                    <p className={`text-[11px] mt-0.5 ${color}`}>{label}</p>
+                  </div>
+                  <ChevronRight className={`w-3.5 h-3.5 flex-shrink-0 text-gray-700 group-hover:text-gray-500 transition ${active ? "text-gray-400" : ""}`} />
+                </button>
               );
             })
           )}
         </div>
       </aside>
 
-      {/* Main Canvas (Right) */}
-      <main className="flex-1 overflow-y-auto p-8 space-y-6 bg-gray-950">
-        {!selectedIncident ? (
-          <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-3 py-20">
-            <Activity className="w-12 h-12 text-gray-700 animate-pulse" />
-            <h3 className="text-lg font-semibold text-gray-400">No Incident Selected</h3>
-            <p className="text-xs text-gray-600 max-w-sm text-center">
-              Select an incident card from the sidebar feed or click 'Simulate' to launch an autonomous SRE investigation.
-            </p>
+      {/* ── Main canvas ────────────────────────────────────────────────── */}
+      <main className="flex-1 overflow-y-auto bg-[#0a0a0a]">
+        {!incident ? (
+          <div className="h-full flex flex-col items-center justify-center gap-3">
+            <Activity className="w-8 h-8 text-gray-800" />
+            <p className="text-sm text-gray-600">Select or simulate an incident</p>
           </div>
         ) : (
-          <>
-            {/* Main Canvas Header: Incident ID, timestamp, status badge, and 'View Trace in Langfuse' button */}
-            <div className="flex flex-wrap items-center justify-between gap-4 bg-gray-900 p-6 rounded-lg border border-gray-800 shadow-lg">
-              <div className="space-y-1">
-                <div className="flex items-center space-x-3">
-                  <h1 className="text-xl font-bold font-mono text-white">
-                    Incident ID: {selectedIncident.incident_id}
+          <div className="max-w-4xl mx-auto px-8 py-10 space-y-6">
+
+            {/* ── Header ── */}
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <h1 className="font-mono text-sm font-medium text-gray-100">
+                    {incident.incident_id}
                   </h1>
-                  {renderStatusBadge(selectedIncident, true)}
-                </div>
-                <p className="text-xs text-gray-400">
-                  Created: {selectedIncident.created_at ? new Date(selectedIncident.created_at).toLocaleString() : "Just now"}
-                  {selectedIncident.incident_type && (
-                    <span className="ml-2 px-2 py-0.5 bg-gray-800 text-gray-300 rounded font-mono text-[11px]">
-                      {selectedIncident.incident_type}
+                  {(() => {
+                    const { label, color } = statusLabel(incident);
+                    return <span className={`text-xs font-medium ${color}`}>{label}</span>;
+                  })()}
+                  {incident.incident_type && (
+                    <span className="text-xs font-mono border border-white/10 rounded px-1.5 py-0.5 text-gray-500">
+                      {incident.incident_type}
                     </span>
                   )}
-                </p>
+                </div>
+                {incident.created_at && (
+                  <p className="text-xs text-gray-600">
+                    {new Date(incident.created_at).toLocaleString()}
+                  </p>
+                )}
               </div>
 
-              {/* View Trace in Langfuse button */}
               <button
-                onClick={() => handleViewTrace(selectedIncident.incident_id)}
-                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-cyan-400 hover:text-cyan-300 rounded-lg text-sm font-semibold flex items-center gap-2 transition-all cursor-pointer shadow"
+                onClick={handleViewTrace}
+                className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 border border-white/10 rounded-md text-xs text-gray-400 hover:text-gray-200 hover:border-white/20 transition cursor-pointer"
               >
-                <Terminal className="w-4 h-4" />
-                View Trace in Langfuse
-                <ExternalLink className="w-3.5 h-3.5" />
+                <Terminal className="w-3.5 h-3.5" />
+                Langfuse trace
+                <ExternalLink className="w-3 h-3 opacity-60" />
               </button>
             </div>
 
-            {/* Approval Gate Panel (Prominent Card) */}
-            {proposedFix && !selectedIncident.approval_status && (
-              <div className="bg-gray-900 border-2 border-orange-500/50 p-6 rounded-lg shadow-xl space-y-4">
-                <div className="flex items-center justify-between border-b border-gray-800 pb-3">
-                  <div className="flex items-center space-x-3">
-                    <div className="p-2 bg-orange-500/10 text-orange-400 rounded-lg border border-orange-500/30">
-                      <ShieldAlert className="w-6 h-6 animate-pulse" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-white">Human-In-The-Loop Approval Gate</h3>
-                      <p className="text-xs text-gray-400">
-                        Autonomous pipeline paused. Action proposal requires operator authorization.
-                      </p>
-                    </div>
+            {/* ── Approval gate ── */}
+            {fix && !incident.approval_status && (
+              <div className={`rounded-md border p-5 space-y-4 ${isHighRisk ? "border-red-900/50 bg-red-950/20" : "border-white/10 bg-[#111]"}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className={`w-4 h-4 ${isHighRisk ? "text-red-500" : "text-amber-500"}`} />
+                    <p className="text-sm font-medium text-gray-100">Awaiting approval</p>
                   </div>
-
-                  {/* Risk Level Badge */}
-                  <div>
-                    {selectedIncident.risk_level === "high" && (
-                      <span className="px-3.5 py-1 bg-red-500/20 text-red-400 border border-red-500/50 text-xs font-bold rounded-full flex items-center gap-1.5">
-                        <AlertTriangle className="w-4 h-4" /> HIGH RISK
-                      </span>
-                    )}
-                    {selectedIncident.risk_level === "medium" && (
-                      <span className="px-3.5 py-1 bg-yellow-500/20 text-yellow-400 border border-yellow-500/50 text-xs font-bold rounded-full flex items-center gap-1.5">
-                        <AlertTriangle className="w-4 h-4" /> MEDIUM RISK
-                      </span>
-                    )}
-                    {selectedIncident.risk_level === "low" && (
-                      <span className="px-3.5 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 text-xs font-bold rounded-full flex items-center gap-1.5">
-                        <ShieldCheck className="w-4 h-4" /> LOW RISK
-                      </span>
-                    )}
-                  </div>
+                  {incident.risk_level && (
+                    <span className={`text-[11px] font-mono border rounded px-1.5 py-0.5 uppercase ${riskBadge(incident.risk_level)}`}>
+                      {incident.risk_level} risk
+                    </span>
+                  )}
                 </div>
 
-                {/* Proposed Fix Details */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-gray-950 p-4 rounded-lg border border-gray-800 text-sm">
-                  <div>
-                    <span className="text-xs text-gray-500 font-semibold block uppercase">Action</span>
-                    <span className="font-mono text-cyan-400 font-bold text-base">
-                      {proposedFix.action_type}
-                    </span>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="space-y-0.5">
+                    <p className="text-[11px] text-gray-600 uppercase tracking-wider">Action</p>
+                    <p className="font-mono text-gray-200">{fix.action_type}</p>
                   </div>
-                  <div>
-                    <span className="text-xs text-gray-500 font-semibold block uppercase">Target</span>
-                    <span className="font-mono text-indigo-400 font-bold text-base">
-                      {proposedFix.target}
-                    </span>
+                  <div className="space-y-0.5">
+                    <p className="text-[11px] text-gray-600 uppercase tracking-wider">Target</p>
+                    <p className="font-mono text-gray-200">{fix.target}</p>
                   </div>
-                  {proposedFix.params && Object.keys(proposedFix.params).length > 0 && (
-                    <div className="col-span-1 md:col-span-2">
-                      <span className="text-xs text-gray-500 font-semibold block uppercase mb-1">Parameters</span>
-                      <pre className="text-xs font-mono bg-gray-900 p-2.5 rounded border border-gray-800 text-gray-300 overflow-x-auto">
-                        {JSON.stringify(proposedFix.params, null, 2)}
+                  {fix.params && Object.keys(fix.params).length > 0 && (
+                    <div className="col-span-2 space-y-1">
+                      <p className="text-[11px] text-gray-600 uppercase tracking-wider">Parameters</p>
+                      <pre className="bg-black border border-white/10 rounded-md px-3 py-2 text-xs font-mono text-gray-400 overflow-x-auto">
+                        {JSON.stringify(fix.params, null, 2)}
                       </pre>
                     </div>
                   )}
                 </div>
 
-                {/* Strict High Risk Guardrail Confirmation Input */}
+                {/* High-risk confirmation */}
                 {isHighRisk && (
-                  <div className="bg-red-950/40 border border-red-500/40 rounded-lg p-4 space-y-2">
-                    <div className="flex items-center space-x-2 text-red-400 text-xs font-bold uppercase tracking-wider">
-                      <AlertTriangle className="w-4 h-4" />
-                      <span>Safety Guardrail Enforcement</span>
-                    </div>
-                    <p className="text-xs text-gray-300">
-                      High-risk actions require typing the exact action name to confirm before approval:
+                  <div className="space-y-2">
+                    <p className="text-xs text-red-400">
+                      Type <span className="font-mono bg-red-950/40 px-1 rounded">{confirmTarget}</span> to confirm this action.
                     </p>
                     <input
                       type="text"
-                      value={typedAction}
-                      onChange={(e) => setTypedAction(e.target.value)}
-                      placeholder={`Type '${requiredActionName}' to enable approve...`}
-                      className="bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm text-white font-mono w-full focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 placeholder:text-gray-600"
+                      value={typedConfirm}
+                      onChange={(e) => setTypedConfirm(e.target.value)}
+                      placeholder={confirmTarget}
+                      className="w-full bg-black border border-white/10 focus:border-white/30 outline-none rounded-md px-3 py-2 text-sm font-mono text-gray-200 placeholder:text-gray-700 transition"
                     />
                   </div>
                 )}
 
-                {/* Approval & Rejection Buttons */}
-                <div className="flex items-center justify-between pt-2">
-                  {!showRejectInput ? (
+                {/* Action buttons */}
+                <div className="flex items-center justify-between pt-1">
+                  {!showReject ? (
                     <button
-                      onClick={() => setShowRejectInput(true)}
+                      onClick={() => setShowReject(true)}
                       disabled={actionLoading}
-                      className="px-4 py-2 bg-gray-800 hover:bg-red-950/60 text-gray-300 hover:text-red-400 border border-gray-700 hover:border-red-500/50 rounded-lg text-sm font-semibold flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                      className="text-xs text-gray-500 hover:text-gray-300 transition cursor-pointer"
                     >
-                      <XCircle className="w-4 h-4" /> Reject
+                      Reject
                     </button>
                   ) : (
-                    <div className="flex-1 mr-4 flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-1 mr-4">
                       <input
                         type="text"
                         value={rejectReason}
                         onChange={(e) => setRejectReason(e.target.value)}
-                        placeholder="Reason for rejection..."
-                        className="flex-1 bg-gray-950 border border-gray-700 rounded px-3 py-1.5 text-xs text-white placeholder:text-gray-600 focus:outline-none focus:border-red-500"
+                        placeholder="Reason (optional)"
                         autoFocus
+                        className="flex-1 bg-black border border-white/10 focus:border-white/30 outline-none rounded-md px-3 py-1.5 text-xs font-mono text-gray-300 placeholder:text-gray-700 transition"
                       />
                       <button
-                        onClick={() => handleReject(selectedIncident.incident_id)}
+                        onClick={handleReject}
                         disabled={actionLoading}
-                        className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-semibold cursor-pointer"
+                        className="px-3 py-1.5 bg-red-950 border border-red-900/60 text-red-400 text-xs rounded-md hover:bg-red-900/40 transition cursor-pointer disabled:opacity-50"
                       >
-                        Confirm Reject
+                        {actionLoading ? "…" : "Confirm"}
                       </button>
                       <button
-                        onClick={() => setShowRejectInput(false)}
-                        className="px-2 py-1.5 text-gray-400 hover:text-gray-200 text-xs"
+                        onClick={() => setShowReject(false)}
+                        className="text-xs text-gray-600 hover:text-gray-400 transition"
                       >
                         Cancel
                       </button>
@@ -504,123 +516,118 @@ export function App() {
                   )}
 
                   <button
-                    onClick={() => handleApprove(selectedIncident.incident_id)}
-                    disabled={!isApproveEnabled || actionLoading}
-                    className={`px-6 py-2.5 rounded-lg text-sm font-bold flex items-center gap-2 transition-all shadow ${
-                      isApproveEnabled && !actionLoading
-                        ? "bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
-                        : "bg-gray-800 text-gray-500 border border-gray-700 cursor-not-allowed opacity-50"
-                    }`}
+                    onClick={handleApprove}
+                    disabled={!approveEnabled || actionLoading}
+                    className="px-4 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-gray-200 transition disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                   >
-                    <CheckCircle2 className="w-4 h-4" />
-                    {actionLoading ? "Processing..." : "Approve"}
+                    {actionLoading ? "Processing…" : "Approve"}
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Diagnosis Grid (CSS Grid: grid grid-cols-1 md:grid-cols-2 gap-6 mt-6) */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-              {/* Left Column: Symptoms Card (bg-gray-800 rounded-lg p-6) */}
-              <div className="bg-gray-800 rounded-lg p-6 border border-gray-700/60 space-y-3 shadow-md">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2 border-b border-gray-700 pb-2">
-                  <FileText className="w-4 h-4 text-blue-400" /> Symptoms
-                </h3>
-                {selectedIncident.symptoms && selectedIncident.symptoms.length > 0 ? (
-                  <ul className="space-y-2 text-xs text-gray-300">
-                    {selectedIncident.symptoms.map((symptom, idx) => (
-                      <li key={idx} className="flex items-start gap-2 bg-gray-950 p-2.5 rounded border border-gray-800">
-                        <span className="w-1.5 h-1.5 bg-blue-400 rounded-full mt-1.5 flex-shrink-0"></span>
-                        <span className="leading-relaxed">{symptom}</span>
+            {/* Resolved/Rejected banner */}
+            {incident.approval_status === "approved" && (
+              <div className="flex items-center gap-2 px-4 py-3 border border-emerald-900/50 bg-emerald-950/20 rounded-md text-sm text-emerald-400">
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                Remediation approved and executed.
+                {incident.resolution && <span className="ml-1 text-gray-400 text-xs">{incident.resolution}</span>}
+              </div>
+            )}
+            {incident.approval_status === "rejected" && (
+              <div className="flex items-center gap-2 px-4 py-3 border border-red-900/50 bg-red-950/20 rounded-md text-sm text-red-400">
+                <XCircle className="w-4 h-4 flex-shrink-0" />
+                Rejected.
+                {incident.approval_notes && <span className="ml-1 text-gray-400 text-xs">{incident.approval_notes}</span>}
+              </div>
+            )}
+
+            {/* ── Diagnosis grid ── */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Symptoms */}
+              <div className="rounded-md border border-white/10 bg-[#111111] p-5 space-y-3">
+                <p className="text-[11px] font-medium text-gray-600 uppercase tracking-widest">Symptoms</p>
+                {incident.symptoms && incident.symptoms.length > 0 ? (
+                  <ul className="space-y-1.5">
+                    {incident.symptoms.map((s, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs text-gray-400">
+                        <span className="mt-1.5 w-1 h-1 rounded-full bg-gray-600 flex-shrink-0" />
+                        {s}
                       </li>
                     ))}
                   </ul>
                 ) : (
-                  <div className="text-xs text-gray-500 italic">No symptoms recorded.</div>
+                  <p className="text-xs text-gray-700 italic">No symptoms recorded.</p>
                 )}
               </div>
 
-              {/* Right Column: Root Cause Hypothesis Card (bg-gray-800 rounded-lg p-6) */}
-              <div className="bg-gray-800 rounded-lg p-6 border border-gray-700/60 space-y-4 shadow-md">
-                <div className="flex items-center justify-between border-b border-gray-700 pb-2">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2">
-                    <Cpu className="w-4 h-4 text-cyan-400" /> Root Cause Hypothesis
-                  </h3>
-                  {selectedIncident.confidence_score !== undefined && selectedIncident.confidence_score !== null && (
-                    <span className="text-xs font-mono font-bold text-cyan-400">
-                      Score: {(selectedIncident.confidence_score * 100).toFixed(0)}%
+              {/* Root cause */}
+              <div className="rounded-md border border-white/10 bg-[#111111] p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] font-medium text-gray-600 uppercase tracking-widest">Root Cause</p>
+                  {incident.confidence_score != null && (
+                    <span className="text-[11px] font-mono text-gray-600">
+                      {(incident.confidence_score * 100).toFixed(0)}% conf.
                     </span>
                   )}
                 </div>
-
-                <p className="text-sm text-gray-200 leading-relaxed font-medium">
-                  {selectedIncident.root_cause_hypothesis || (
-                    <span className="text-gray-500 italic">Awaiting diagnosis output...</span>
+                <p className="text-sm text-gray-300 leading-relaxed">
+                  {incident.root_cause_hypothesis ?? (
+                    <span className="text-gray-700 italic">Awaiting diagnosis…</span>
                   )}
                 </p>
-
-                {/* Visual Confidence Score Bar */}
-                {selectedIncident.confidence_score !== undefined && selectedIncident.confidence_score !== null && (
-                  <div className="space-y-1.5 pt-2">
-                    <div className="flex justify-between text-[11px] text-gray-400">
-                      <span>Confidence Calibration</span>
-                      <span className="font-mono">{(selectedIncident.confidence_score * 100).toFixed(0)} / 100</span>
-                    </div>
-                    <div className="w-full bg-gray-950 h-2 rounded-full overflow-hidden border border-gray-700">
-                      <div
-                        className="bg-cyan-500 h-full transition-all duration-500"
-                        style={{ width: `${selectedIncident.confidence_score * 100}%` }}
-                      ></div>
-                    </div>
+                {incident.confidence_score != null && (
+                  <div className="w-full h-1 rounded-full bg-white/5 overflow-hidden">
+                    <div
+                      className="h-full bg-gray-400 transition-all duration-500"
+                      style={{ width: `${incident.confidence_score * 100}%` }}
+                    />
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Raw Telemetry Signals (Syntax-highlighted JSON viewer block: pre className="bg-black text-green-400 p-4 rounded overflow-x-auto text-sm") */}
-            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700/60 space-y-3 shadow-md">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2 border-b border-gray-700 pb-2">
-                <Terminal className="w-4 h-4 text-green-400" /> Raw Telemetry Signals
-              </h3>
-              <pre className="bg-black text-green-400 p-4 rounded overflow-x-auto text-sm font-mono max-h-60 border border-gray-900">
-                {JSON.stringify(selectedIncident.raw_signals || {}, null, 2)}
+            {/* ── Raw telemetry ── */}
+            <div className="rounded-md border border-white/10 bg-[#111111] p-5 space-y-3">
+              <p className="text-[11px] font-medium text-gray-600 uppercase tracking-widest">Raw Telemetry</p>
+              <pre className="bg-black text-gray-300 font-mono text-xs p-4 rounded-md overflow-x-auto max-h-56 border border-white/5">
+                {JSON.stringify(incident.raw_signals ?? {}, null, 2)}
               </pre>
             </div>
 
-            {/* Audit Trail Timeline (Bottom vertical feed with border-l-2 border-blue-500) */}
-            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700/60 space-y-4 shadow-md">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2 border-b border-gray-700 pb-3">
-                <Activity className="w-4 h-4 text-emerald-400" /> Audit Trail Timeline
-              </h3>
-
-              {!selectedIncident.event_log || selectedIncident.event_log.length === 0 ? (
-                <div className="text-xs text-gray-500 italic py-2">
-                  No events logged in the audit trail.
+            {/* ── Audit trail ── */}
+            <div className="rounded-md border border-white/10 bg-[#111111] p-5 space-y-4">
+              <p className="text-[11px] font-medium text-gray-600 uppercase tracking-widest">Audit Trail</p>
+              {!incident.event_log || incident.event_log.length === 0 ? (
+                <div className="flex items-center gap-2 text-xs text-gray-700 py-2">
+                  <Clock className="w-3.5 h-3.5" />
+                  No events recorded.
                 </div>
               ) : (
-                <div className="border-l-2 border-blue-500 pl-6 space-y-6 relative ml-2 my-2">
-                  {selectedIncident.event_log.map((evt, idx) => (
-                    <div key={idx} className="relative group">
+                <div className="pl-4 border-l border-white/10 space-y-4">
+                  {incident.event_log.map((evt, idx) => (
+                    <div key={idx} className="relative">
                       {/* Timeline dot */}
-                      <div className="absolute -left-[31px] top-1 w-3 h-3 rounded-full bg-blue-500 border-2 border-gray-800 shadow"></div>
-
-                      <div className="bg-gray-950 p-4 rounded border border-gray-800 text-xs space-y-1">
-                        <div className="flex items-center justify-between text-gray-400">
-                          <span className="font-mono font-bold text-cyan-400">
-                            [{evt.source_agent}] {evt.action}
+                      <div className="absolute -left-[19px] top-[5px] w-2 h-2 rounded-full bg-gray-700 border border-[#111111]" />
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs font-mono text-gray-400">
+                            {evt.source_agent}
                           </span>
-                          <span className="font-mono text-[11px] text-gray-500">
+                          <span className="text-[11px] text-gray-600 font-medium">{evt.action}</span>
+                          <span className="ml-auto text-[11px] font-mono text-gray-700">
                             {new Date(evt.timestamp).toLocaleTimeString()}
                           </span>
                         </div>
-                        <p className="text-gray-300 text-xs leading-relaxed">{evt.details}</p>
+                        <p className="text-xs text-gray-500 leading-relaxed">{evt.details}</p>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-          </>
+
+          </div>
         )}
       </main>
     </div>
