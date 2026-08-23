@@ -1,6 +1,8 @@
 import os
 import re
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
@@ -16,28 +18,74 @@ class MonitorInterpretation(BaseModel):
         description="A dictionary of key/value pairs summarizing the anomaly. Example: {'service': 'cart-service', 'error_type': 'timeout'}. DO NOT return a raw string."
     )
 
-def detect_anomaly(logs: List[Tuple[str, str, str]]) -> bool:
+def detect_anomaly(logs: List[Tuple[str, str, str]], sensitivity_multiplier: float = 1.0) -> bool:
     """
     Deterministic check: Looks for OOMKilled, ERROR 500, or CRITICAL timeouts.
-    In a real system, this would be a Prometheus alert or Datadog monitor.
+    The sensitivity_multiplier (from the Postmortem feedback loop) can lower the
+    effective threshold — e.g. a multiplier of 0.8 makes the detector 20%% more
+    aggressive by also counting warning-level signals when there are enough of them.
+    In a real system this would scale a Prometheus alert threshold.
     """
     anomaly_keywords = ["OOMKilled", "ERROR 500", "CRITICAL"]
+    warning_keywords = ["WARN", "WARNING", "HIGH", "SLOW", "TIMEOUT"]
+
     for _, _, message in logs:
         if any(keyword in message for keyword in anomaly_keywords):
             return True
+
+    # Feedback loop: when sensitivity_multiplier < 1.0, count accumulated warnings
+    # as an anomaly if they exceed a scaled threshold.
+    if sensitivity_multiplier < 1.0:
+        warn_count = sum(
+            1
+            for _, _, message in logs
+            if any(w in message for w in warning_keywords)
+        )
+        # Base threshold: fire if >=5 warnings. Scaled: fire if >= (5 * multiplier).
+        scaled_threshold = max(1, int(5 * sensitivity_multiplier))
+        if warn_count >= scaled_threshold:
+            return True
+
     return False
 
 def extract_anomalous_logs(logs: List[Tuple[str, str, str]]) -> str:
     """Helper to format logs for the LLM prompt."""
     return "\n".join([f"[{ts}] {service}: {msg}" for ts, service, msg in logs[-10:]]) # Send last 10 logs
 
+def _load_threshold_store() -> Dict[str, Any]:
+    """
+    Loads the persisted threshold multipliers written by the Postmortem Agent.
+    Returns {} if the file is missing or empty.
+    """
+    store_path = Path(__file__).resolve().parent.parent / "simulator" / "thresholds.json"
+    try:
+        text = store_path.read_text(encoding="utf-8").strip()
+        return json.loads(text) if text else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
 def run_monitor_agent(logs: List[Tuple[str, str, str]]) -> IncidentState | None:
     """
     The main Monitor Agent function.
     Returns a new IncidentState if an anomaly is detected, otherwise None.
+    Applies threshold multipliers from the Postmortem feedback loop.
     """
-    # 1. Deterministic Detection
-    if not detect_anomaly(logs):
+    # Phase 6: load threshold overrides from last postmortem run
+    threshold_store = _load_threshold_store()
+
+    # Determine the most sensitive multiplier among all services present in the logs
+    # (a lower multiplier = more sensitive detection)
+    services_in_logs = {svc for _, svc, _ in logs}
+    active_multiplier = 1.0
+    for key, entry in threshold_store.items():
+        svc, _metric = key.split(":", 1) if ":" in key else (key, "")
+        if svc in services_in_logs:
+            m = float(entry.get("multiplier", 1.0))
+            active_multiplier = min(active_multiplier, m)  # take the most sensitive
+
+    # 1. Deterministic Detection (with optional sensitivity boost)
+    if not detect_anomaly(logs, sensitivity_multiplier=active_multiplier):
         return None
     
     # 2. LLM Interpretation (Only triggered if anomaly is found)

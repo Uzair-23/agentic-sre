@@ -1,0 +1,17 @@
+{
+  "payment-service:memory": {
+    "multiplier": 0.8,
+    "reason": "Memory usage rose from 67% to 95% before OOMKill; lowering the threshold to 80% of the current value will trigger alerts earlier and prevent restarts.",
+    "updated_at": "2026-08-23T17:02:28.670558+00:00"
+  },
+  "payment-service:error_rate": {
+    "multiplier": 0.8,
+    "reason": "Lower the error rate threshold to trigger alerts earlier for this class of incident",
+    "updated_at": "2026-08-23T17:02:32.253862+00:00"
+  },
+  "auth-service:error_rate": {
+    "multiplier": 0.8,
+    "reason": "Error rate spiked rapidly; lowering the threshold will trigger alerts earlier for similar regressions.",
+    "updated_at": "2026-08-23T17:03:58.870110+00:00"
+  }
+}

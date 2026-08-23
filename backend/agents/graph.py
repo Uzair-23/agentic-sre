@@ -9,6 +9,7 @@ from agents.schemas import IncidentState, Event
 from agents.monitor import run_monitor_agent
 from agents.diagnosis import run_diagnosis_agent
 from agents.remediation import run_remediation_agent
+from agents.postmortem import run_postmortem_agent
 
 from guardrails.risk_classifier import classify_risk
 from guardrails.pii_scrubber import scrub_pii
@@ -124,6 +125,19 @@ def executor_node(state: IncidentState) -> IncidentState:
     })
 
 
+def postmortem_node(state: IncidentState) -> IncidentState:
+    """
+    Phase 6 Postmortem node.
+    Runs after executor_node on the approved path.
+    Generates a structured postmortem and persists a threshold adjustment
+    to simulator/thresholds.json for the Monitor feedback loop.
+    """
+    # Skip postmortem for security-aborted incidents
+    if state.root_cause_hypothesis == "Prompt injection attempt detected":
+        return state
+    return run_postmortem_agent(state)
+
+
 # --- Conditional Routing ---
 
 def route_after_approval(state: IncidentState) -> str:
@@ -146,6 +160,7 @@ builder.add_node("diagnosis", diagnosis_node)
 builder.add_node("remediation", remediation_node)
 builder.add_node("approval_gate", approval_gate_node)
 builder.add_node("executor", executor_node)
+builder.add_node("postmortem", postmortem_node)
 
 # Define edges
 builder.add_edge(START, "diagnosis")
@@ -162,7 +177,9 @@ builder.add_conditional_edges(
     },
 )
 
-builder.add_edge("executor", END)
+# Route: executor -> postmortem -> END
+builder.add_edge("executor", "postmortem")
+builder.add_edge("postmortem", END)
 
 # Compile graph with InMemorySaver checkpointer
 checkpointer = InMemorySaver()
