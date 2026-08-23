@@ -1,5 +1,16 @@
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import datetime
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+try:
+    from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
+    _LANGFUSE_AVAILABLE = True
+except ImportError:
+    _LANGFUSE_AVAILABLE = False
+    LangfuseCallbackHandler = None  # type: ignore
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
@@ -197,8 +208,18 @@ def run_incident_pipeline(
     Executes the multi-agent incident response pipeline.
     Pre-processes logs with PII scrubber, runs Monitor agent, and executes the checkpointed graph.
     Supports thread_id and resumption via Command.
+    All node invocations are traced via Langfuse when LANGFUSE_* env vars are set.
     """
-    config = {"configurable": {"thread_id": thread_id}}
+    config: Dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+
+    # Wire Langfuse tracing if the package is available and keys are configured
+    if _LANGFUSE_AVAILABLE and os.getenv("LANGFUSE_SECRET_KEY"):
+        langfuse_handler = LangfuseCallbackHandler(
+            session_id=thread_id,
+            tags=["agentic-sre-sim"],
+            metadata={"incident_id": thread_id},
+        )
+        config["callbacks"] = [langfuse_handler]
 
     if resume_command is not None:
         result = incident_graph.invoke(resume_command, config=config)

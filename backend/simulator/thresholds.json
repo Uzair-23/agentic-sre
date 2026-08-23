@@ -1,17 +1,27 @@
 {
   "payment-service:memory": {
     "multiplier": 0.8,
-    "reason": "Memory usage rose from 67% to 95% before OOMKill; lowering the threshold to 80% of the current value will trigger alerts earlier and prevent restarts.",
-    "updated_at": "2026-08-23T17:02:28.670558+00:00"
+    "reason": "Memory usage was rising gradually before OOM; lowering the threshold to 80% of the previous value will trigger alerts earlier.",
+    "updated_at": "2026-08-23T18:03:20.389781+00:00"
   },
   "payment-service:error_rate": {
     "multiplier": 0.8,
-    "reason": "Lower the error rate threshold to trigger alerts earlier for this class of incident",
-    "updated_at": "2026-08-23T17:02:32.253862+00:00"
+    "reason": "Lowering the error\u2011rate threshold to 80% of the current value will trigger alerts earlier for similar high\u2011error incidents.",
+    "updated_at": "2026-08-23T18:03:23.952961+00:00"
   },
   "auth-service:error_rate": {
     "multiplier": 0.8,
-    "reason": "Error rate spiked rapidly; lowering the threshold will trigger alerts earlier for similar regressions.",
-    "updated_at": "2026-08-23T17:03:58.870110+00:00"
+    "reason": "Lower the error_rate threshold to detect future regressions earlier",
+    "updated_at": "2026-08-23T18:27:33.811013+00:00"
+  },
+  "inventory-db:latency": {
+    "multiplier": 0.8,
+    "reason": "Lowering the latency threshold will cause the Monitor Agent to fire earlier for sudden spikes in inventory-db query latency, enabling faster remediation.",
+    "updated_at": "2026-08-23T17:13:51.178026+00:00"
+  },
+  "inventory-db:error_rate": {
+    "multiplier": 0.8,
+    "reason": "Lowering the error_rate threshold will trigger alerts earlier for connection exhaustion or latency spikes in inventory-db.",
+    "updated_at": "2026-08-23T17:14:44.513066+00:00"
   }
 }
