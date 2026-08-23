@@ -14,12 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from langgraph.types import Command
 
-try:
-    from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
-    _LANGFUSE_AVAILABLE = True
-except ImportError:
-    _LANGFUSE_AVAILABLE = False
-    LangfuseCallbackHandler = None  # type: ignore
+from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
 
 from agents.schemas import IncidentState
 from agents.graph import run_incident_pipeline, incident_graph
@@ -162,19 +157,20 @@ def approve_incident(incident_id: str):
     if incident_id not in INCIDENT_STORE:
         raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
 
-    config: Dict[str, Any] = {"configurable": {"thread_id": incident_id}}
-    if _LANGFUSE_AVAILABLE and os.getenv("LANGFUSE_SECRET_KEY"):
-        langfuse_handler = LangfuseCallbackHandler(
-            session_id=incident_id,
-            tags=["agentic-sre-sim", "hitl-approve"],
-            metadata={"incident_id": incident_id},
-        )
-        config["callbacks"] = [langfuse_handler]
+    langfuse_handler = LangfuseCallbackHandler(
+        session_id=incident_id,
+        tags=["agentic-sre-sim", "hitl-approve"],
+    )
+    config: Dict[str, Any] = {
+        "configurable": {"thread_id": incident_id},
+        "callbacks": [langfuse_handler],
+    }
 
     resume_cmd = Command(resume={"action": "approve", "reason": "Approved via API"})
 
     try:
         raw_final = incident_graph.invoke(resume_cmd, config=config)
+        langfuse_handler.flush()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to resume pipeline: {exc}")
 
@@ -210,19 +206,20 @@ def reject_incident(
         raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
 
     reason = payload.reason if payload and payload.reason else "Rejected by operator"
-    config: Dict[str, Any] = {"configurable": {"thread_id": incident_id}}
-    if _LANGFUSE_AVAILABLE and os.getenv("LANGFUSE_SECRET_KEY"):
-        langfuse_handler = LangfuseCallbackHandler(
-            session_id=incident_id,
-            tags=["agentic-sre-sim", "hitl-reject"],
-            metadata={"incident_id": incident_id},
-        )
-        config["callbacks"] = [langfuse_handler]
+    langfuse_handler = LangfuseCallbackHandler(
+        session_id=incident_id,
+        tags=["agentic-sre-sim", "hitl-reject"],
+    )
+    config: Dict[str, Any] = {
+        "configurable": {"thread_id": incident_id},
+        "callbacks": [langfuse_handler],
+    }
 
     resume_cmd = Command(resume={"action": "reject", "reason": reason})
 
     try:
         raw_final = incident_graph.invoke(resume_cmd, config=config)
+        langfuse_handler.flush()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to resume pipeline: {exc}")
 

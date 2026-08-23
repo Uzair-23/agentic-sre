@@ -5,12 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-try:
-    from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
-    _LANGFUSE_AVAILABLE = True
-except ImportError:
-    _LANGFUSE_AVAILABLE = False
-    LangfuseCallbackHandler = None  # type: ignore
+from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
@@ -208,21 +203,21 @@ def run_incident_pipeline(
     Executes the multi-agent incident response pipeline.
     Pre-processes logs with PII scrubber, runs Monitor agent, and executes the checkpointed graph.
     Supports thread_id and resumption via Command.
-    All node invocations are traced via Langfuse when LANGFUSE_* env vars are set.
+    All node invocations are traced to Langfuse; the global client is flushed after every
+    invoke to guarantee spans are delivered before the caller gets a response.
     """
-    config: Dict[str, Any] = {"configurable": {"thread_id": thread_id}}
-
-    # Wire Langfuse tracing if the package is available and keys are configured
-    if _LANGFUSE_AVAILABLE and os.getenv("LANGFUSE_SECRET_KEY"):
-        langfuse_handler = LangfuseCallbackHandler(
-            session_id=thread_id,
-            tags=["agentic-sre-sim"],
-            metadata={"incident_id": thread_id},
-        )
-        config["callbacks"] = [langfuse_handler]
+    langfuse_handler = LangfuseCallbackHandler(
+        session_id=thread_id,
+        tags=["agentic-sre-sim"],
+    )
+    config: Dict[str, Any] = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": [langfuse_handler],
+    }
 
     if resume_command is not None:
         result = incident_graph.invoke(resume_command, config=config)
+        langfuse_handler.flush()
     else:
         # Pre-process logs to scrub PII
         scrubbed_logs = [(ts, service, scrub_pii(msg)) for ts, service, msg in logs]
@@ -232,6 +227,7 @@ def run_incident_pipeline(
             return None
 
         result = incident_graph.invoke(initial_state, config=config)
+        langfuse_handler.flush()
 
     if isinstance(result, dict):
         return IncidentState.model_validate(result)

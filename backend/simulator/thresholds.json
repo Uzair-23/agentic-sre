@@ -1,18 +1,18 @@
 {
   "payment-service:memory": {
     "multiplier": 0.8,
-    "reason": "Memory usage was rising gradually before OOM; lowering the threshold to 80% of the previous value will trigger alerts earlier.",
-    "updated_at": "2026-08-23T18:03:20.389781+00:00"
+    "reason": "Memory usage rose to 95% before the OOM event; lowering the threshold to 80% will trigger alerts earlier and allow preemptive remediation.",
+    "updated_at": "2026-08-23T19:28:00.093327+00:00"
   },
   "payment-service:error_rate": {
     "multiplier": 0.8,
-    "reason": "Lowering the error\u2011rate threshold to 80% of the current value will trigger alerts earlier for similar high\u2011error incidents.",
-    "updated_at": "2026-08-23T18:03:23.952961+00:00"
+    "reason": "Lower the error_rate threshold to trigger alerts earlier for payment-service.",
+    "updated_at": "2026-08-23T18:52:06.366432+00:00"
   },
   "auth-service:error_rate": {
     "multiplier": 0.8,
-    "reason": "Lower the error_rate threshold to detect future regressions earlier",
-    "updated_at": "2026-08-23T18:27:33.811013+00:00"
+    "reason": "Lower the error rate threshold to detect high 5xx rates earlier for auth-service",
+    "updated_at": "2026-08-23T19:29:36.316220+00:00"
   },
   "inventory-db:latency": {
     "multiplier": 0.8,
@@ -23,5 +23,25 @@
     "multiplier": 0.8,
     "reason": "Lowering the error_rate threshold will trigger alerts earlier for connection exhaustion or latency spikes in inventory-db.",
     "updated_at": "2026-08-23T17:14:44.513066+00:00"
+  },
+  "cart-service:error_rate": {
+    "multiplier": 0.8,
+    "reason": "Lower the error_rate threshold to fire alerts earlier when connection exhaustion or latency spikes occur.",
+    "updated_at": "2026-08-23T19:28:32.416397+00:00"
+  },
+  "cart-service:latency": {
+    "multiplier": 0.8,
+    "reason": "Lower the latency threshold to fire alerts earlier when inventory-db latency rises, preventing timeouts.",
+    "updated_at": "2026-08-23T18:53:51.026446+00:00"
+  },
+  "checkout-service:cpu": {
+    "multiplier": 0.8,
+    "reason": "Lower the CPU threshold to trigger alerts earlier before saturation occurs",
+    "updated_at": "2026-08-23T18:56:22.417283+00:00"
+  },
+  "checkout-service:queue_depth": {
+    "multiplier": 0.8,
+    "reason": "Lower the queue depth threshold to fire alerts earlier before the queue reaches maximum capacity.",
+    "updated_at": "2026-08-23T19:29:04.946458+00:00"
   }
 }
